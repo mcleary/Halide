@@ -37,6 +37,8 @@ function(add_tutorial source_file)
 endfunction()
 
 # Declare tutorials
+add_tutorial(lesson_00_trying_stuff.cpp)
+add_tutorial(lesson_00_gpu_sample.cpp)
 add_tutorial(lesson_01_basics.cpp)
 add_tutorial(lesson_02_input_image.cpp WITH_IMAGE_IO)
 add_tutorial(lesson_03_debugging_1.cpp)

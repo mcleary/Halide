@@ -126,6 +126,9 @@ class InjectGpuOffload : public IRMutator {
     using IRMutator::visit;
 
     Stmt visit(const For *loop) override {
+        /*IRPrinter printer(std::cout);
+        loop->accept(&printer);*/
+
         if (!CodeGen_GPU_Dev::is_gpu_var(loop->name)) {
             return IRMutator::visit(loop);
         }

@@ -109,6 +109,8 @@ protected:
     std::string simt_intrinsic(const std::string &name);
 
     bool supports_atomic_add(const Type &t) const override;
+
+    std::map<std::string, llvm::Function*> wmma_intrinsics;
 };
 
 CodeGen_PTX_Dev::CodeGen_PTX_Dev(const Target &host)
@@ -132,6 +134,141 @@ Type CodeGen_PTX_Dev::upgrade_type_for_storage(const Type &t) const {
     }
     return CodeGen_LLVM::upgrade_type_for_storage(t);
 }
+
+class ExtractTensorCoreOperations : public IRMutator
+{
+    using IRMutator::visit;
+
+    bool found_candidate_loop = false;
+    bool matmul_found = false;
+
+    Stmt visit(const Store* store) override
+    {
+        if (found_candidate_loop)
+        {
+            IRPrinter p(std::cout);
+            store->accept(&p);
+            std::cout << std::endl << std::endl;
+
+            //  matmul[t26] = matmul[t26] + float32((float16(A[(A.stride.1*matmul.s1.r8$x) + t35])*float16(B[((B.stride.1*t34) - t33) + matmul.s1.r8$x])))
+            const Expr wild_f32x = Variable::make(Float(32), "*");
+            vector<Expr> matches;
+            const Expr acc_pattern = wild_f32x + wild_f32x;
+            if (expr_match(acc_pattern, store->value, matches))
+            {
+                // matmul[t26]
+                const Load* load = matches[0].as<Load>();
+
+                // float32((float16(A[(A.stride.1 * matmul.s1.r8$x) + t35]) * float16(B[((B.stride.1 * t34) - t33) + matmul.s1.r8$x])))
+                const Cast* cast = matches[1].as<Cast>();
+
+                if (load && cast)
+                {
+                    // Check if the load is loading from the same place where the store is storing
+                    // i.e. if this is an update operation
+                    if (load->name == store->name && equal(load->index, store->index))
+                    {
+                        // Yes, this is an update operation, now let's check cast to see if it is a matmul that can be converted
+                        // to wmma intrinsic
+
+                        // (float16(A[(A.stride.1 * matmul.s1.r8$x) + t35]) * float16(B[((B.stride.1 * t34) - t33) + matmul.s1.r8$x]))
+                        const Expr wild_f16x = Variable::make(Float(16), "*");
+                        const Expr mul_pattern = wild_f16x * wild_f16x;
+                        if (expr_match(mul_pattern, cast->value, matches))
+                        {
+                            const Load* load_a = matches[0].as<Load>();
+                            const Load* load_b = matches[1].as<Load>();
+
+                            if (load_a && load_b)
+                            {
+                                /*MyIRVisitor p(std::cout);
+                                frag_a->accept(&p);
+                                std::cout << std::endl << std::endl;
+
+                                frag_b->accept(&p);
+                                std::cout << std::endl << std::endl;*/
+
+                                matmul_found = true;
+
+                                Expr a_var = Variable::make(Handle(), load_a->name);
+                                Expr b_var = Variable::make(Handle(), load_b->name);
+                                Expr c_var = Variable::make(Handle(), load->name);
+
+                                Expr mma = Call::make(Handle(), "wmma_mma", { a_var, b_var, c_var, c_var }, Call::Intrinsic);
+
+                                Stmt s = Evaluate::make(mma);
+
+                                // {ptr, ldm, layout}
+                                // ptr    -> memory location
+                                // ldm    -> leading dimension
+                                /*
+                                Expr frag_a = Call::make(Float(16), "wmma_load_a", { a_var }, Call::Intrinsic);
+                                Expr frag_b = Call::make(Float(16), "wmma_load_b", { b_var }, Call::Intrinsic);
+                                Expr frag_c = Call::make(Float(32), "wmma_load_c", { c_var }, Call::Intrinsic);
+                                Expr mma = Call::make(Float(32), "wmma_mma", {}, Call::Intrinsic);
+
+                                Stmt s = Block::make({
+                                    Evaluate::make(frag_a),
+                                    Evaluate::make(frag_b),
+                                    Evaluate::make(frag_c),
+                                    Evaluate::make(mma)
+                                });
+
+                                */
+                                s.accept(&p);
+                                std::cout << std::endl << std::endl;
+                                // Stmt s = Store::make("wmma_mma_test", load_frag_a, 1, Parameter(), const_true(1), ModulusRemainder());
+                                return s;
+                            }
+                        }
+                    }
+                }
+            }
+
+            /*Expr new_value = Cast::make(store->value.type(), 42);
+            return Store::make(store->name, new_value, store->index, store->param, store->predicate, store->alignment);*/
+        }
+
+        return IRMutator::visit(store);
+    }
+
+    Stmt visit(const For* loop) override
+    {
+        // FIXME: This should really be checking  for the supported tile sizes in the GPU tile
+        const bool is_gpu_var = CodeGen_GPU_Dev::is_gpu_var(loop->name);
+        if (!is_gpu_var && is_const_zero(loop->min) && is_const(loop->extent))
+        {
+            if (const IntImm* extent_value = loop->extent.as<IntImm>())
+            {
+                if (extent_value->value % 16 == 0)
+                {
+                    IRPrinter p(std::cout);
+                    loop->body.accept(&p);
+                    std::cout << std::endl << std::endl;
+
+                    /*MyIRVisitor vis(std::cout);
+                    loop->body.accept(&vis);
+                    std::cout << std::endl << std::endl;*/
+
+                    ScopedValue<bool> b(found_candidate_loop, true);
+
+                    matmul_found = false;
+                    Stmt new_body = mutate(loop->body);
+                    if (matmul_found)
+                    {
+                        return new_body;
+                    }
+                    else
+                    {
+                        return For::make(loop->name, loop->min, loop->extent, loop->for_type, loop->device_api, new_body);
+                    }
+                }
+            }
+        }
+
+        return IRMutator::visit(loop);
+    }
+};
 
 void CodeGen_PTX_Dev::add_kernel(Stmt stmt,
                                  const std::string &name,
@@ -187,6 +324,14 @@ void CodeGen_PTX_Dev::add_kernel(Stmt stmt,
     BasicBlock *body_block = BasicBlock::Create(*context, "body", function);
     builder->SetInsertPoint(body_block);
 
+    debug(1) << "Extracting TensorCore operations...\n";
+    std::cout << "Before ExtractTensorCoreOperations: " << std::endl;
+    IRPrinter p(std::cout);
+    stmt.accept(&p);
+    stmt = ExtractTensorCoreOperations{}.mutate(stmt);
+    std::cout << "After ExtractTensorCoreOperations: \n";
+    stmt.accept(&p);
+
     debug(1) << "Generating llvm bitcode for kernel...\n";
     // Ok, we have a module, function, context, and a builder
     // pointing at a brand new basic block. We're good to go.
@@ -223,15 +368,29 @@ void CodeGen_PTX_Dev::add_kernel(Stmt stmt,
     }
 }
 
-void CodeGen_PTX_Dev::init_module() {
+namespace Internal
+{
+    struct wmma_fragment
+    {
+        Type a0{ Float(16,2) };
+        Type a1{ Float(16,2) };
+        Type a2{ Float(16,2) };
+    };
+}
+
+HALIDE_DECLARE_EXTERN_STRUCT_TYPE(Internal::wmma_fragment);
+
+void CodeGen_PTX_Dev::init_module()
+{
     init_context();
 
     module = get_initial_module_for_ptx_device(target, context);
 
-    struct Intrinsic {
-        const char *name;
+    struct Intrinsic
+    {
+        const char* name;
         Type ret_type;
-        const char *intrin_name;
+        const char* intrin_name;
         vector<Type> arg_types;
     };
 
@@ -246,11 +405,69 @@ void CodeGen_PTX_Dev::init_module() {
         {"dp2a", UInt(32), "dp2a_u32_u32", {UInt(16, 4), UInt(8, 4), UInt(32)}},
     };
 
-    for (auto &&i : ptx_intrins) {
-        auto *fn = declare_intrin_overload(i.name, i.ret_type, i.intrin_name, std::move(i.arg_types));
+    for (auto&& i : ptx_intrins)
+    {
+        auto* fn = declare_intrin_overload(i.name, i.ret_type, i.intrin_name, std::move(i.arg_types));
         fn->addFnAttr(llvm::Attribute::ReadNone);
         fn->addFnAttr(llvm::Attribute::NoUnwind);
     }
+
+    struct WMMAIntrinsic
+    {
+        const char* name;
+        /*int num_ret_values;
+        Type ret_type;*/
+        const char* intrin_name;
+        vector<Type> arg_types;
+    };
+
+    // TODO: Improve this
+    std::vector<Type> wmma_mma_arg_types;
+    for (int i = 0; i < 16; ++i)
+    {
+        wmma_mma_arg_types.push_back(Float(16, 2));
+    }
+    for (int i = 0; i < 8; ++i)
+    {
+        wmma_mma_arg_types.push_back(Float(32));
+    }
+
+    /*WMMAIntrinsic ptx_wmma_intrins[] = {
+        {"wmma_load_a", 8, Float(16, 2), "llvm.nvvm.wmma.m16n16k16.load.a.row.f16.p0i8", {Handle()}},
+        {"wmma_load_b", 8, Float(16, 2), "llvm.nvvm.wmma.m16n16k16.load.b.row.f16.p0i8", {Handle()}},
+        {"wmma_load_c", 4, Float(16, 2), "llvm.nvvm.wmma.m16n16k16.load.c.row.f16.p0i8", {Handle()}},
+        {"wmma_mma", 4, Float(16, 2), "llvm.nvvm.wmma.m16n16k16.mma.row.row.f16.f32", wmma_mma_arg_types }
+    };*/
+    WMMAIntrinsic ptx_wmma_intrins[] = {
+        {"wmma_mma", "wmma.m16n16k16.mma.f32.f32", {Handle(), Handle(), Handle()}}
+    };
+
+    for (auto&& i : ptx_wmma_intrins)
+    {
+        /*std::vector<llvm::Type*> ret_type_members;
+        ret_type_members.reserve(i.num_ret_values);
+        for (int ret_type_index = 0; ret_type_index < i.num_ret_values; ++ret_type_index)
+        {
+            ret_type_members.push_back(llvm_type_of(i.ret_type));
+        }*/
+
+        std::vector<llvm::Type*> arg_types;
+        arg_types.reserve(i.arg_types.size());
+        for (int arg_type_index = 0; arg_type_index < i.arg_types.size(); ++arg_type_index)
+        {
+            arg_types.push_back(llvm_type_of(i.arg_types[arg_type_index]));
+        }
+
+        // llvm::StructType* ret_type_struct = llvm::StructType::create(*context, ret_type_members);
+
+        llvm::Type* void_ret_type = llvm::Type::getVoidTy(*context);
+        llvm::Function* fn = get_llvm_intrin(void_ret_type, i.intrin_name, arg_types);
+        fn->addFnAttr(llvm::Attribute::ReadNone);
+        fn->addFnAttr(llvm::Attribute::NoUnwind);
+
+        wmma_intrinsics[i.name] = fn;
+    }
+
 }
 
 void CodeGen_PTX_Dev::visit(const Call *op) {
@@ -272,6 +489,19 @@ void CodeGen_PTX_Dev::visit(const Call *op) {
         // TODO: It would be better if CodeGen_LLVM could handle overloaded intrin calls by default.
         value = call_overloaded_intrin(op->type, op->name, op->args);
         internal_assert(value) << Expr(op) << "\n";
+    } else if (op->name == "wmma_mma")
+    {
+        llvm::Function* wmma_func = wmma_intrinsics[op->name];
+
+        vector<Value*> arg_values(op->args.size());
+        for (size_t i = 0; i < op->args.size(); i++)
+        {
+            arg_values[i] = codegen(op->args[i]);
+        }
+
+        // TODO: Call the WMMA intrinsic
+        llvm::Type* void_type = llvm::Type::getVoidTy(*context);
+        value = call_intrin(void_type, 1, wmma_func, arg_values);
     } else {
         CodeGen_LLVM::visit(op);
     }
@@ -697,6 +927,7 @@ vector<char> CodeGen_PTX_Dev::compile_to_src() {
         internal_error << "Failed to set up passes to emit PTX source\n";
     }
 
+    // llvm::DebugFlag = true;
     // Run optimization passes
     function_pass_manager.doInitialization();
     for (llvm::Module::iterator i = module->begin(); i != module->end(); i++) {

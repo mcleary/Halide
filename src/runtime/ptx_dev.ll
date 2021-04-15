@@ -411,3 +411,60 @@ define weak_odr i32 @dp2a_u32_u32(<4 x i16> %a, <4 x i8> %b, i32 %i) nounwind re
        ret i32 %d
 }
 
+declare {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.a.row.f16.p0i8(i8 addrspace(0)* %src );
+declare {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.b.row.f16.p0i8(i8 addrspace(0)* %src );
+declare {float, float, float, float, float, float, float, float} @llvm.nvvm.wmma.m16n16k16.load.c.row.f32.p0i8(i8 addrspace(0)* %src );
+declare {float, float, float, float, float, float, float, float} @llvm.nvvm.wmma.m16n16k16.mma.row.row.f32.f32(
+        <2 x half> %a0, <2 x half> %a1, <2 x half> %a2, <2 x half> %a3, <2 x half> %a4, <2 x half> %a5, <2 x half> %a6, <2 x half> %a7,
+        <2 x half> %b0, <2 x half> %b1, <2 x half> %b2, <2 x half> %b3, <2 x half> %b4, <2 x half> %b5, <2 x half> %b6, <2 x half> %b7,
+        float %c0, float %c1, float %c2, float %c3, float %c4, float %c5, float %c6, float %c7);
+declare void @llvm.nvvm.wmma.m16n16k16.store.d.row.f32.p0i8(i8 addrspace(0)* %src, float %d0, float %d1, float %d2, float %d3, float %d4, float %d5, float %d6, float %d7);
+
+define weak_odr i8 addrspace(0)* @wmma.m16n16k16.mma.f32.f32(i8 addrspace(0)* %a, i8 addrspace(0)* %b, i8 addrspace(0)* %c, i8 addrspace(0)* %d) nounwind readnone alwaysinline {
+    %v0 = call {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.a.row.f16.p0i8(i8 addrspace(0)* %a );
+    %a0 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 0
+    %a1 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 1
+    %a2 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 2
+    %a3 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 3
+    %a4 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 4
+    %a5 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 5
+    %a6 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 6
+    %a7 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 7
+
+    %v1 = call {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.b.row.f16.p0i8(i8 addrspace(0)* %b );    
+    %b0 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 0
+    %b1 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 1
+    %b2 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 2
+    %b3 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 3
+    %b4 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 4
+    %b5 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 5
+    %b6 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 6
+    %b7 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 7
+
+    %v2 = call {float, float, float, float, float, float, float, float} @llvm.nvvm.wmma.m16n16k16.load.c.row.f32.p0i8(i8 addrspace(0)* %c)
+    %c0 = extractvalue {float, float, float, float, float, float, float, float} %v2, 0
+    %c1 = extractvalue {float, float, float, float, float, float, float, float} %v2, 1
+    %c2 = extractvalue {float, float, float, float, float, float, float, float} %v2, 2
+    %c3 = extractvalue {float, float, float, float, float, float, float, float} %v2, 3
+    %c4 = extractvalue {float, float, float, float, float, float, float, float} %v2, 4
+    %c5 = extractvalue {float, float, float, float, float, float, float, float} %v2, 5
+    %c6 = extractvalue {float, float, float, float, float, float, float, float} %v2, 6
+    %c7 = extractvalue {float, float, float, float, float, float, float, float} %v2, 7
+
+    %v3 = call {float, float, float, float, float, float, float, float} @llvm.nvvm.wmma.m16n16k16.mma.row.row.f32.f32(
+        <2 x half> %a0, <2 x half> %a1, <2 x half> %a2, <2 x half> %a3, <2 x half> %a4, <2 x half> %a5, <2 x half> %a6, <2 x half> %a7,
+        <2 x half> %b0, <2 x half> %b1, <2 x half> %b2, <2 x half> %b3, <2 x half> %b4, <2 x half> %b5, <2 x half> %b6, <2 x half> %b7,
+        float %c0, float %c1, float %c2, float %c3, float %c4, float %c5, float %c6, float %c7)
+    %d0 = extractvalue {float, float, float, float, float, float, float, float} %v3, 0
+    %d1 = extractvalue {float, float, float, float, float, float, float, float} %v3, 1
+    %d2 = extractvalue {float, float, float, float, float, float, float, float} %v3, 2
+    %d3 = extractvalue {float, float, float, float, float, float, float, float} %v3, 3
+    %d4 = extractvalue {float, float, float, float, float, float, float, float} %v3, 4
+    %d5 = extractvalue {float, float, float, float, float, float, float, float} %v3, 5
+    %d6 = extractvalue {float, float, float, float, float, float, float, float} %v3, 6
+    %d7 = extractvalue {float, float, float, float, float, float, float, float} %v3, 7
+
+    call void @llvm.nvvm.wmma.m16n16k16.store.d.row.f32.p0i8(i8 addrspace(0)* %d, float %d0, float %d1, float %d2, float %d3, float %d4, float %d5, float %d6, float %d7);
+    ret i8 addrspace(0)* %d
+}
+
