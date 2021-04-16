@@ -194,7 +194,7 @@ class ExtractTensorCoreOperations : public IRMutator
                                 Expr b_var = Variable::make(Handle(), load_b->name);
                                 Expr c_var = Variable::make(Handle(), load->name);
 
-                                Expr mma = Call::make(Handle(), "wmma_mma", { a_var, b_var, c_var, c_var }, Call::Intrinsic);
+                                Expr mma = Call::make(Handle(), "wmma_m16n16k16_mma", { a_var, b_var, c_var, c_var }, Call::Intrinsic);
 
                                 Stmt s = Evaluate::make(mma);
 
@@ -368,18 +368,6 @@ void CodeGen_PTX_Dev::add_kernel(Stmt stmt,
     }
 }
 
-namespace Internal
-{
-    struct wmma_fragment
-    {
-        Type a0{ Float(16,2) };
-        Type a1{ Float(16,2) };
-        Type a2{ Float(16,2) };
-    };
-}
-
-HALIDE_DECLARE_EXTERN_STRUCT_TYPE(Internal::wmma_fragment);
-
 void CodeGen_PTX_Dev::init_module()
 {
     init_context();
@@ -415,42 +403,16 @@ void CodeGen_PTX_Dev::init_module()
     struct WMMAIntrinsic
     {
         const char* name;
-        /*int num_ret_values;
-        Type ret_type;*/
         const char* intrin_name;
         vector<Type> arg_types;
     };
 
-    // TODO: Improve this
-    std::vector<Type> wmma_mma_arg_types;
-    for (int i = 0; i < 16; ++i)
-    {
-        wmma_mma_arg_types.push_back(Float(16, 2));
-    }
-    for (int i = 0; i < 8; ++i)
-    {
-        wmma_mma_arg_types.push_back(Float(32));
-    }
-
-    /*WMMAIntrinsic ptx_wmma_intrins[] = {
-        {"wmma_load_a", 8, Float(16, 2), "llvm.nvvm.wmma.m16n16k16.load.a.row.f16.p0i8", {Handle()}},
-        {"wmma_load_b", 8, Float(16, 2), "llvm.nvvm.wmma.m16n16k16.load.b.row.f16.p0i8", {Handle()}},
-        {"wmma_load_c", 4, Float(16, 2), "llvm.nvvm.wmma.m16n16k16.load.c.row.f16.p0i8", {Handle()}},
-        {"wmma_mma", 4, Float(16, 2), "llvm.nvvm.wmma.m16n16k16.mma.row.row.f16.f32", wmma_mma_arg_types }
-    };*/
     WMMAIntrinsic ptx_wmma_intrins[] = {
-        {"wmma_mma", "wmma.m16n16k16.mma.f32.f32", {Handle(), Handle(), Handle()}}
+        {"wmma_m16n16k16_mma", "wmma.m16n16k16.mma.f32.f32", {Handle(), Handle(), Handle()}}
     };
 
     for (auto&& i : ptx_wmma_intrins)
     {
-        /*std::vector<llvm::Type*> ret_type_members;
-        ret_type_members.reserve(i.num_ret_values);
-        for (int ret_type_index = 0; ret_type_index < i.num_ret_values; ++ret_type_index)
-        {
-            ret_type_members.push_back(llvm_type_of(i.ret_type));
-        }*/
-
         std::vector<llvm::Type*> arg_types;
         arg_types.reserve(i.arg_types.size());
         for (int arg_type_index = 0; arg_type_index < i.arg_types.size(); ++arg_type_index)
@@ -489,8 +451,7 @@ void CodeGen_PTX_Dev::visit(const Call *op) {
         // TODO: It would be better if CodeGen_LLVM could handle overloaded intrin calls by default.
         value = call_overloaded_intrin(op->type, op->name, op->args);
         internal_assert(value) << Expr(op) << "\n";
-    } else if (op->name == "wmma_mma")
-    {
+    } else if (op->name == "wmma_mma") {
         llvm::Function* wmma_func = wmma_intrinsics[op->name];
 
         vector<Value*> arg_values(op->args.size());

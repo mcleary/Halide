@@ -1,4 +1,3 @@
-
 #include <iostream>
 #include <iomanip>
 
@@ -78,6 +77,13 @@ int main()
 
 		/*Func out("out");
 		out(x, y) = matmul(x, y);*/
+		Func out = matmul;
+
+		Var blockX("blockX"), blockY("blockY"), threadX("threadX"), threadY("threadY");
+		out
+			.update()
+			.gpu_tile(x, y, blockX, blockY, threadX, threadY, x_tile, y_tile)
+			;
 
 		/*out
 			.tile(x, y, xi, yi, x_tile * vec_size * warp_size, y_tile * y_unroll)
@@ -92,42 +98,42 @@ int main()
 			.gpu_lanes(xii)
 			;*/
 
-		// Schedule the matmul on the GPU in tileX x tileY tiles
-		/*matmul
-			.store_in(MemoryType::Register)
-			.compute_at(out, x)
-			.split(x, xo, xi, warp_size * vec_size, TailStrategy::RoundUp)
-			.split(y, ty, y, y_unroll)
-			.gpu_threads(ty)
-			.unroll(xi, vec_size)
-			.gpu_lanes(xi)
-			.unroll(xo)
-			.unroll(y)
-			.update()
-			.split(x, xo, xi, warp_size * vec_size, TailStrategy::RoundUp)
-			.split(y, ty, y, y_unroll)
-			.gpu_threads(ty)
-			.unroll(xi, vec_size)
-			.gpu_lanes(xi)
-			.split(r.x, rxo, rxi, warp_size)
-			.unroll(rxi, r_unroll)
-			.reorder(xi, xo, y, rxi, ty, rxo)
-			.unroll(xo)
-			.unroll(y)
-			;*/
+			//	// Schedule the matmul on the GPU in tileX x tileY tiles
+			//	matmul
+			//		.store_in(MemoryType::Register)
+			//		.compute_at(out, x)
+			//		.split(x, xo, xi, warp_size * vec_size, TailStrategy::RoundUp)
+			//		.split(y, ty, y, y_unroll)
+			//		.gpu_threads(ty)
+			//		.unroll(xi, vec_size)
+			//		.gpu_lanes(xi)
+			//		.unroll(xo)
+			//		.unroll(y)
+			//		.update()
+			//		.split(x, xo, xi, warp_size * vec_size, TailStrategy::RoundUp)
+			//		.split(y, ty, y, y_unroll)
+			//		.gpu_threads(ty)
+			//		.unroll(xi, vec_size)
+			//		.gpu_lanes(xi)
+			//		.split(r.x, rxo, rxi, warp_size)
+			//		.unroll(rxi, r_unroll)
+			//		.reorder(xi, xo, y, rxi, ty, rxo)
+			//		.unroll(xo)
+			//		.unroll(y)
+			//		;
 
 
-		Var blockX("blockX"), blockY("blockY"), threadX("threadX"), threadY("threadY");
-		matmul
-			.update()
-			// .vectorize(x, 16)
-			.gpu_tile(x, y, blockX, blockY, threadX, threadY, x_tile, y_tile)
-			;
+			//matmul
+			//	.compute_at(matmul.in(), x)
+			//	.update()
+			//	// .vectorize(x, 16)
+			//	.gpu_tile(x, y, blockX, blockY, threadX, threadY, x_tile, y_tile)
+			//	;
 
-		// matmul.trace_stores();
+			// matmul.trace_stores();
 
 		cout << "Matmul Loop Nest: " << std::endl;
-		matmul.print_loop_nest();
+		out.print_loop_nest();
 		cout << endl << endl;
 
 		/*Internal::Stmt s = Internal::lower_main_stmt({ out.function() }, out.name(), target);
@@ -141,7 +147,7 @@ int main()
 #endif
 
 		cout << "Compiling to HTML ... " << flush;
-		matmul.compile_to_lowered_stmt("cuda.html", args, HTML, target);
+		out.compile_to_lowered_stmt("cuda.html", args, HTML, target);
 		// matmul.compile_to_lowered_stmt("cuda.html", {}, HTML, target);
 		cout << "done" << endl;
 
@@ -154,7 +160,7 @@ int main()
 		cout << "done" << endl;
 
 		cout << "Jitting the code ... " << flush;
-		matmul.compile_jit(target);
+		out.compile_jit(target);
 		cout << "done" << endl;
 
 #if USE_PARAMS
@@ -185,7 +191,7 @@ int main()
 		cout << endl << endl;
 
 		// Run it
-		Buffer<float> result = matmul.realize(rows, cols);
+		Buffer<float> result = out.realize(rows, cols);
 
 		cout << "Result: " << endl;
 		PrintBuffer(result);
