@@ -194,30 +194,12 @@ class ExtractTensorCoreOperations : public IRMutator
                                 Expr b_var = Variable::make(Handle(), load_b->name);
                                 Expr c_var = Variable::make(Handle(), load->name);
 
-                                Expr mma = Call::make(Handle(), "wmma_m16n16k16_mma", { a_var, b_var, c_var, c_var }, Call::Intrinsic);
+                                Expr mma = Call::make(Handle(), "wmma_m16n16k16_mma_f32_f32", { a_var, b_var, c_var, c_var }, Call::Intrinsic);
 
                                 Stmt s = Evaluate::make(mma);
 
-                                // {ptr, ldm, layout}
-                                // ptr    -> memory location
-                                // ldm    -> leading dimension
-                                /*
-                                Expr frag_a = Call::make(Float(16), "wmma_load_a", { a_var }, Call::Intrinsic);
-                                Expr frag_b = Call::make(Float(16), "wmma_load_b", { b_var }, Call::Intrinsic);
-                                Expr frag_c = Call::make(Float(32), "wmma_load_c", { c_var }, Call::Intrinsic);
-                                Expr mma = Call::make(Float(32), "wmma_mma", {}, Call::Intrinsic);
-
-                                Stmt s = Block::make({
-                                    Evaluate::make(frag_a),
-                                    Evaluate::make(frag_b),
-                                    Evaluate::make(frag_c),
-                                    Evaluate::make(mma)
-                                });
-
-                                */
                                 s.accept(&p);
                                 std::cout << std::endl << std::endl;
-                                // Stmt s = Store::make("wmma_mma_test", load_frag_a, 1, Parameter(), const_true(1), ModulusRemainder());
                                 return s;
                             }
                         }
@@ -328,7 +310,7 @@ void CodeGen_PTX_Dev::add_kernel(Stmt stmt,
     std::cout << "Before ExtractTensorCoreOperations: " << std::endl;
     IRPrinter p(std::cout);
     stmt.accept(&p);
-    stmt = ExtractTensorCoreOperations{}.mutate(stmt);
+    // stmt = ExtractTensorCoreOperations{}.mutate(stmt);
     std::cout << "After ExtractTensorCoreOperations: \n";
     stmt.accept(&p);
 
@@ -408,7 +390,7 @@ void CodeGen_PTX_Dev::init_module()
     };
 
     WMMAIntrinsic ptx_wmma_intrins[] = {
-        {"wmma_m16n16k16_mma", "wmma.m16n16k16.mma.f32.f32", {Handle(), Handle(), Handle()}}
+        {"wmma_m16n16k16_mma_f32_f32", "wmma.m16n16k16.mma.f32.f32", {Handle(), Handle(), Handle()}}
     };
 
     for (auto&& i : ptx_wmma_intrins)
@@ -451,7 +433,7 @@ void CodeGen_PTX_Dev::visit(const Call *op) {
         // TODO: It would be better if CodeGen_LLVM could handle overloaded intrin calls by default.
         value = call_overloaded_intrin(op->type, op->name, op->args);
         internal_assert(value) << Expr(op) << "\n";
-    } else if (op->name == "wmma_mma") {
+    } else if (op->name == "wmma_m16n16k16_mma_f32_f32") {
         llvm::Function* wmma_func = wmma_intrinsics[op->name];
 
         vector<Value*> arg_values(op->args.size());

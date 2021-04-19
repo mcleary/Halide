@@ -3,12 +3,30 @@
 
 #include "Halide.h"
 #include "MyIRPrinter.h"
+#include "float_comparison.h"
 
 using namespace std;
 using namespace Halide;
 using namespace Halide::ConciseCasts;
 
+
 #define USE_PARAMS 1
+
+template<typename T>
+void InitMatrix(Buffer<T>& buffer)
+{
+	for (int i = 0; i < buffer.width(); ++i)
+	{
+		for (int j = 0; j < buffer.height(); ++j)
+		{
+			float v = i + j * buffer.width();
+			// v /= 512.0f;
+			v = 1.0f;
+			buffer(i, j) = static_cast<float16_t>(v);
+		}
+	}
+
+}
 
 template<typename T>
 void PrintBuffer(const Buffer<T>& buffer)
@@ -28,8 +46,10 @@ int main()
 {
 	try
 	{
-		const int rows = 16;
-		const int cols = 16;
+		// mk x kn
+		const int M = 16;
+		const int N = 16;
+		const int K = 32;
 		const int x_tile = 16;
 		const int y_tile = 16;
 
@@ -66,13 +86,13 @@ int main()
 		// B(x, y) = 1;
 		// A(x, y) = select(y < rows / 2, 1, 2);
 		// B(x, y) = select(x < rows / 2, 1, 2);
-		A(x, y) = x + y * rows;
-		B(x, y) = x + y * rows;
+		// A(x, y) = x + y * rows;
+		// B(x, y) = x + y * rows;
 
 		Func matmul("matmul");
-		RDom r(0, rows);
+		RDom r(0, K);
 		matmul(x, y) += f32((A(x, r)) * B(r, y));
-		// matmul(x, y) = A(x, y) + B(x, y);
+		matmul(x, y) = A(x, y) + B(x, y);
 		// matmul.trace_stores();
 
 		/*Func out("out");
@@ -82,7 +102,7 @@ int main()
 		Var blockX("blockX"), blockY("blockY"), threadX("threadX"), threadY("threadY");
 		out
 			.update()
-			.gpu_tile(x, y, blockX, blockY, threadX, threadY, x_tile, y_tile)
+			// .gpu_tile(x, y, blockX, blockY, threadX, threadY, x_tile, y_tile)
 			;
 
 		/*out
@@ -164,17 +184,11 @@ int main()
 		cout << "done" << endl;
 
 #if USE_PARAMS
-		Buffer<float16_t> inputA(rows, cols);
-		Buffer<float16_t> inputB(rows, cols);
+		Buffer<float16_t> inputA(M, K);
+		Buffer<float16_t> inputB(K, N);
 
-		for (int i = 0; i < inputA.width(); ++i)
-		{
-			for (int j = 0; j < inputA.height(); ++j)
-			{
-				inputA(i, j) = static_cast<float16_t>(i + j * inputA.width());
-				inputB(i, j) = static_cast<float16_t>(i + j * inputB.width());
-			}
-		}
+		InitMatrix(inputA);
+		InitMatrix(inputB);
 
 		A.set(inputA);
 		B.set(inputB);
@@ -182,20 +196,46 @@ int main()
 		Buffer<float> inputA = A.realize(rows, cols);
 		Buffer<float> inputB = B.realize(rows, cols);
 #endif
-		cout << "Input A: " << endl;
+		cout << "Input A: (" << inputA.width() << " x " << inputA.height() << ")" << endl;
 		PrintBuffer(inputA);
 		cout << endl << endl;
 
-		cout << "Input B: " << endl;
+		cout << "Input B: (" << inputB.width() << " x " << inputB.height() << ")" << endl;
 		PrintBuffer(inputB);
 		cout << endl << endl;
 
 		// Run it
-		Buffer<float> result = out.realize(rows, cols);
+		Buffer<float> result = out.realize(M, N);
 
 		cout << "Result: " << endl;
 		PrintBuffer(result);
 		cout << endl << endl;
+
+		cout << "Comparing: " << endl;
+		for (int i = 0; i < M; ++i)
+		{
+			for (int j = 0; j < N; ++j)
+			{
+				float acc = 0.0f;
+				for (int k = 0; k < K; ++k)
+				{
+					float16_t a = inputA(i, k);
+					float16_t b = inputB(k, j);
+					// std::cout << a << " * " << b << " = " << (a * b) << std::endl;
+					acc += static_cast<float>(a * b);
+				}
+				expect_almost_equal("result(i, j)", "acc", "aa", result(i, j), acc, 4000);
+
+				/*float diff = std::abs(result(i, j)) - std::abs(acc);
+				constexpr float epsilon = std::numeric_limits<float>::epsilon();
+				if (diff >= epsilon*1000)
+				{
+					std::cout << "Error at (" << i << ", " << j << "). Expected: " << acc << " Got: " << result(i, j) << std::endl;
+				}*/
+			}
+		}
+
+
 	}
 	catch (RuntimeError& e)
 	{
