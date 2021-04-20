@@ -36,7 +36,7 @@ void PrintBuffer(const Buffer<T>& buffer)
 	{
 		for (int x = 0; x < buffer.width(); x++)
 		{
-			printf("%10.2f ", (float)buffer(x, y));
+			printf("%5.2f ", (float)buffer(x, y));
 		}
 		printf("\n");
 	}
@@ -47,8 +47,8 @@ int main()
 	try
 	{
 		// mk x kn
-		const int M = 16;
-		const int N = 16;
+		const int M = 32;
+		const int N = 32;
 		const int K = 32;
 		const int x_tile = 16;
 		const int y_tile = 16;
@@ -92,7 +92,6 @@ int main()
 		Func matmul("matmul");
 		RDom r(0, K);
 		matmul(x, y) += f32((A(x, r)) * B(r, y));
-		matmul(x, y) = A(x, y) + B(x, y);
 		// matmul.trace_stores();
 
 		/*Func out("out");
@@ -102,7 +101,7 @@ int main()
 		Var blockX("blockX"), blockY("blockY"), threadX("threadX"), threadY("threadY");
 		out
 			.update()
-			// .gpu_tile(x, y, blockX, blockY, threadX, threadY, x_tile, y_tile)
+			.gpu_tile(x, y, blockX, blockY, threadX, threadY, x_tile, y_tile)
 			;
 
 		/*out
@@ -196,18 +195,18 @@ int main()
 		Buffer<float> inputA = A.realize(rows, cols);
 		Buffer<float> inputB = B.realize(rows, cols);
 #endif
-		cout << "Input A: (" << inputA.width() << " x " << inputA.height() << ")" << endl;
+		cout << "Input A: (" << inputA.height() << " x " << inputA.width() << ")" << endl;
 		PrintBuffer(inputA);
 		cout << endl << endl;
 
-		cout << "Input B: (" << inputB.width() << " x " << inputB.height() << ")" << endl;
+		cout << "Input B: (" << inputB.height() << " x " << inputB.width() << ")" << endl;
 		PrintBuffer(inputB);
 		cout << endl << endl;
 
 		// Run it
 		Buffer<float> result = out.realize(M, N);
 
-		cout << "Result: " << endl;
+		cout << "Result: (" << result.height() << " x " << result.width() << ")" << endl;
 		PrintBuffer(result);
 		cout << endl << endl;
 

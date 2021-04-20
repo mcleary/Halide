@@ -65,6 +65,10 @@ public:
         return "cuda";
     }
 
+    /** Map from simt variable names (e.g. foo.__block_id_x) to the llvm
+     * ptx intrinsic functions to call to get them. */
+    static std::string simt_intrinsic(const std::string &name);
+
 protected:
     using CodeGen_LLVM::visit;
 
@@ -104,10 +108,6 @@ protected:
     }
     Type upgrade_type_for_storage(const Type &t) const override;
 
-    /** Map from simt variable names (e.g. foo.__block_id_x) to the llvm
-     * ptx intrinsic functions to call to get them. */
-    std::string simt_intrinsic(const std::string &name);
-
     bool supports_atomic_add(const Type &t) const override;
 
     std::map<std::string, llvm::Function*> wmma_intrinsics;
@@ -135,12 +135,91 @@ Type CodeGen_PTX_Dev::upgrade_type_for_storage(const Type &t) const {
     return CodeGen_LLVM::upgrade_type_for_storage(t);
 }
 
+// Sniff the contents of a kernel to extracts the bounds of all the
+// thread indices (so we know how many threads to launch), and the
+// amount of shared memory to allocate.
+class ExtractBounds : public IRVisitor {
+public:
+    Expr num_threads[4];
+    Expr num_blocks[4];
+    Expr shared_mem_size;
+
+    ExtractBounds()
+        : shared_mem_size(0) {
+        for (int i = 0; i < 4; i++) {
+            num_threads[i] = num_blocks[i] = 1;
+        }
+    }
+
+private:
+    bool found_shared = false;
+
+    using IRVisitor::visit;
+
+    void visit(const For *op) override {
+        if (CodeGen_GPU_Dev::is_gpu_var(op->name)) {
+            internal_assert(is_const_zero(op->min));
+        }
+
+        if (ends_with(op->name, ".__thread_id_x")) {
+            num_threads[0] = op->extent;
+        } else if (ends_with(op->name, ".__thread_id_y")) {
+            num_threads[1] = op->extent;
+        } else if (ends_with(op->name, ".__thread_id_z")) {
+            num_threads[2] = op->extent;
+        } else if (ends_with(op->name, ".__thread_id_w")) {
+            num_threads[3] = op->extent;
+        } else if (ends_with(op->name, ".__block_id_x")) {
+            num_blocks[0] = op->extent;
+        } else if (ends_with(op->name, ".__block_id_y")) {
+            num_blocks[1] = op->extent;
+        } else if (ends_with(op->name, ".__block_id_z")) {
+            num_blocks[2] = op->extent;
+        } else if (ends_with(op->name, ".__block_id_w")) {
+            num_blocks[3] = op->extent;
+        }
+
+        op->body.accept(this);
+    }
+
+    void visit(const LetStmt *op) override {
+        if (expr_uses_var(shared_mem_size, op->name)) {
+            shared_mem_size = Let::make(op->name, op->value, shared_mem_size);
+        }
+        op->body.accept(this);
+    }
+
+    void visit(const Allocate *allocate) override {
+        user_assert(!allocate->new_expr.defined()) << "Allocate node inside GPU kernel has custom new expression.\n"
+                                                   << "(Memoization is not supported inside GPU kernels at present.)\n";
+
+        if (allocate->memory_type == MemoryType::GPUShared) {
+            internal_assert(allocate->extents.size() == 1);
+            shared_mem_size += allocate->extents[0] * allocate->type.bytes();
+            found_shared = true;
+        }
+        allocate->body.accept(this);
+    }
+};
+
 class ExtractTensorCoreOperations : public IRMutator
 {
     using IRMutator::visit;
 
     bool found_candidate_loop = false;
     bool matmul_found = false;
+
+public:
+
+    ExtractTensorCoreOperations()
+    {
+        block_id_y = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__block_id_y"), std::vector<Expr>(), Call::Extern);
+        block_id_x = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__block_id_x"), std::vector<Expr>(), Call::Extern);
+        block_dim_y = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__block_dim_y"), std::vector<Expr>(), Call::Extern);
+        block_dim_x = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__block_dim_x"), std::vector<Expr>(), Call::Extern);
+        grid_dim_x = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__grid_dim_x"), std::vector<Expr>(), Call::Extern);
+        grid_dim_y = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__grid_dim_y"), std::vector<Expr>(), Call::Extern);
+    }
 
     Stmt visit(const Store* store) override
     {
@@ -149,6 +228,8 @@ class ExtractTensorCoreOperations : public IRMutator
             IRPrinter p(std::cout);
             store->accept(&p);
             std::cout << std::endl << std::endl;
+
+            // return Store::make(store->name, cast<float>(store->index), store->index, store->param, store->predicate, store->alignment);
 
             //  matmul[t26] = matmul[t26] + float32((float16(A[(A.stride.1*matmul.s1.r8$x) + t35])*float16(B[((B.stride.1*t34) - t33) + matmul.s1.r8$x])))
             const Expr wild_f32x = Variable::make(Float(32), "*");
@@ -176,7 +257,9 @@ class ExtractTensorCoreOperations : public IRMutator
                         const Expr mul_pattern = wild_f16x * wild_f16x;
                         if (expr_match(mul_pattern, cast->value, matches))
                         {
+                            // A[(A.stride .1 * matmul.s1.r8$x) + t35]
                             const Load* load_a = matches[0].as<Load>();
+                            // B[((B.stride.1 * t34) - t33) + matmul.s1.r8$x]
                             const Load* load_b = matches[1].as<Load>();
 
                             if (load_a && load_b)
@@ -190,11 +273,20 @@ class ExtractTensorCoreOperations : public IRMutator
 
                                 matmul_found = true;
 
+                                // const int64_t block_size = block_dim_x * block_dim_y;
+                                // Expr offset = IntImm::make(Int(64), current_block_linear_id * block_size);
+                                Expr block_size = block_dim_x * block_dim_y;
+                                Expr offset_base = i64(block_id_y * grid_dim_x * block_size + block_id_x * block_dim_x);
+                                Expr offset_a = offset_base * i64(2);
+                                Expr offset_b = offset_base * i64(2);
+                                Expr offset_c = offset_base * i64(4);
+                                Expr stride = 32;
+
                                 Expr a_var = Variable::make(Handle(), load_a->name);
                                 Expr b_var = Variable::make(Handle(), load_b->name);
                                 Expr c_var = Variable::make(Handle(), load->name);
 
-                                Expr mma = Call::make(Handle(), "wmma_m16n16k16_mma_f32_f32", { a_var, b_var, c_var, c_var }, Call::Intrinsic);
+                                Expr mma = Call::make(Handle(), "wmma_m16n16k16_mma_f32_f32", { a_var, stride, offset_a, b_var, stride, offset_b, c_var, stride, offset_c, c_var, stride, offset_c }, Call::Intrinsic);
 
                                 Stmt s = Evaluate::make(mma);
 
@@ -214,35 +306,108 @@ class ExtractTensorCoreOperations : public IRMutator
         return IRMutator::visit(store);
     }
 
+    Expr block_id_y;
+    Expr block_id_x;
+    Expr block_dim_y;
+    Expr block_dim_x;
+    Expr grid_dim_x;
+    Expr grid_dim_y;
+
     Stmt visit(const For* loop) override
     {
         // FIXME: This should really be checking  for the supported tile sizes in the GPU tile
+        // TODO: Please fix these ifs
         const bool is_gpu_var = CodeGen_GPU_Dev::is_gpu_var(loop->name);
+        //if (is_gpu_var)
+        //{
+        //    /*ExtractBounds bounds;
+        //    loop->accept(&bounds);
+
+        //    debug(2) << "Kernel bounds: ("
+        //             << bounds.num_threads[0] << ", "
+        //             << bounds.num_threads[1] << ", "
+        //             << bounds.num_threads[2] << ", "
+        //             << bounds.num_threads[3] << ") threads, ("
+        //             << bounds.num_blocks[0] << ", "
+        //             << bounds.num_blocks[1] << ", "
+        //             << bounds.num_blocks[2] << ", "
+        //             << bounds.num_blocks[3] << ") blocks\n";*/
+
+        //    if (loop->for_type == ForType::GPUBlock)
+        //    {
+        //        if (ends_with(loop->name, ".__block_id_y"))
+        //        {
+        //            num_blocks_y = loop->extent;
+
+        //        }
+        //        else if (ends_with(loop->name, ".__block_id_x"))
+        //        {
+        //            num_blocks_x = loop->extent;
+        //            block_id_x = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(loop->name), std::vector<Expr>(), Call::Extern);
+        //        }
+        //    }
+        //    else if (loop->for_type == ForType::GPUThread)
+        //    {
+        //        if (ends_with(loop->name, ".__thread_id_y"))
+        //        {
+        //            block_dim_y = loop->extent;
+        //        }
+        //        if (ends_with(loop->name, ".__thread_id_x"))
+        //        {
+        //            block_dim_x = loop->extent;
+        //        }
+        //    }
+        //}
+
         if (!is_gpu_var && is_const_zero(loop->min) && is_const(loop->extent))
         {
-            if (const IntImm* extent_value = loop->extent.as<IntImm>())
+            if (block_dim_x.defined() && block_dim_y.defined())
             {
-                if (extent_value->value % 16 == 0)
+                if (const IntImm* loop_extent = loop->extent.as<IntImm>())
                 {
-                    IRPrinter p(std::cout);
-                    loop->body.accept(&p);
-                    std::cout << std::endl << std::endl;
+                    const int64_t extent_value = loop_extent->value;
 
-                    /*MyIRVisitor vis(std::cout);
-                    loop->body.accept(&vis);
-                    std::cout << std::endl << std::endl;*/
-
-                    ScopedValue<bool> b(found_candidate_loop, true);
-
-                    matmul_found = false;
-                    Stmt new_body = mutate(loop->body);
-                    if (matmul_found)
+                    // TODO: This is a temporary check to detect the shape m16n16k16
+                    // Note that m and n are not currently being checked
+                    // Check k
+                    if (extent_value % 16 == 0)
                     {
-                        return new_body;
-                    }
-                    else
-                    {
-                        return For::make(loop->name, loop->min, loop->extent, loop->for_type, loop->device_api, new_body);
+                        const int64_t num_wmma_blocks = extent_value / 16;
+
+                        IRPrinter p(std::cout);
+                        loop->body.accept(&p);
+                        std::cout << std::endl << std::endl;
+
+                        /*MyIRVisitor vis(std::cout);
+                        loop->body.accept(&vis);
+                        std::cout << std::endl << std::endl;*/
+
+                        ScopedValue<bool> b1(found_candidate_loop, true);
+                        ScopedValue<bool> b2(matmul_found, false);
+
+                        // std::vector<Stmt> wmma_blocks;
+                        // wmma_blocks.reserve(num_wmma_blocks);
+
+                        // for (current_block_linear_id = 0; current_block_linear_id < num_wmma_blocks; ++current_block_linear_id)
+                        // {
+                            Stmt loop_body = mutate(loop->body);
+
+                            // wmma_blocks.push_back(l);
+                        // }
+
+                        // Stmt loop_body = Block::make(wmma_blocks);
+
+                        IRPrinter out(std::cout);
+                        loop_body.accept(&out);
+                        std::cout << std::endl << std::endl;
+
+                        if (matmul_found)
+                        {
+                            /*const IntImm *new_loop_extent = IntImm::make(Int(32), num_wmma_blocks);
+                            return For::make(loop->name, loop->min, new_loop_extent, loop->for_type, loop->device_api, loop_body);*/
+
+                            return loop_body;
+                        }
                     }
                 }
             }
@@ -292,6 +457,7 @@ void CodeGen_PTX_Dev::add_kernel(Stmt stmt,
         for (auto &fn_arg : function->args()) {
 
             string arg_sym_name = args[i].name;
+            debug(2) << arg_sym_name << "\n";
             sym_push(arg_sym_name, &fn_arg);
             fn_arg.setName(arg_sym_name);
             arg_sym_names.push_back(arg_sym_name);
@@ -300,19 +466,19 @@ void CodeGen_PTX_Dev::add_kernel(Stmt stmt,
         }
     }
 
+    debug(1) << "Extracting TensorCore operations...\n";
+    std::cout << "Before ExtractTensorCoreOperations: " << std::endl;
+    IRPrinter p(std::cout);
+    stmt.accept(&p);
+    stmt = ExtractTensorCoreOperations{}.mutate(stmt);
+    std::cout << "After ExtractTensorCoreOperations: \n";
+    stmt.accept(&p);
+
     // We won't end the entry block yet, because we'll want to add
     // some allocas to it later if there are local allocations. Start
     // a new block to put all the code.
     BasicBlock *body_block = BasicBlock::Create(*context, "body", function);
     builder->SetInsertPoint(body_block);
-
-    debug(1) << "Extracting TensorCore operations...\n";
-    std::cout << "Before ExtractTensorCoreOperations: " << std::endl;
-    IRPrinter p(std::cout);
-    stmt.accept(&p);
-    // stmt = ExtractTensorCoreOperations{}.mutate(stmt);
-    std::cout << "After ExtractTensorCoreOperations: \n";
-    stmt.accept(&p);
 
     debug(1) << "Generating llvm bitcode for kernel...\n";
     // Ok, we have a module, function, context, and a builder
@@ -390,7 +556,7 @@ void CodeGen_PTX_Dev::init_module()
     };
 
     WMMAIntrinsic ptx_wmma_intrins[] = {
-        {"wmma_m16n16k16_mma_f32_f32", "wmma.m16n16k16.mma.f32.f32", {Handle(), Handle(), Handle()}}
+        {"wmma_m16n16k16_mma_f32_f32", "wmma.m16n16k16.mma.f32.f32", {Handle(), Int(32), Int(64), Handle(), Int(32), Int(64), Handle(), Int(32), Int(64), Handle(), Int(64)}}
     };
 
     for (auto&& i : ptx_wmma_intrins)
@@ -403,7 +569,6 @@ void CodeGen_PTX_Dev::init_module()
         }
 
         // llvm::StructType* ret_type_struct = llvm::StructType::create(*context, ret_type_members);
-
         llvm::Type* void_ret_type = llvm::Type::getVoidTy(*context);
         llvm::Function* fn = get_llvm_intrin(void_ret_type, i.intrin_name, arg_types);
         fn->addFnAttr(llvm::Attribute::ReadNone);
@@ -411,7 +576,6 @@ void CodeGen_PTX_Dev::init_module()
 
         wmma_intrinsics[i.name] = fn;
     }
-
 }
 
 void CodeGen_PTX_Dev::visit(const Call *op) {
@@ -467,6 +631,14 @@ string CodeGen_PTX_Dev::simt_intrinsic(const string &name) {
         return "llvm.nvvm.read.ptx.sreg.ctaid.z";
     } else if (ends_with(name, ".__block_id_w")) {
         return "llvm.nvvm.read.ptx.sreg.ctaid.w";
+    } else if (ends_with(name, ".__block_dim_x")) {
+        return "llvm.nvvm.read.ptx.sreg.ntid.x";
+    } else if (ends_with(name, ".__block_dim_y")) {
+        return "llvm.nvvm.read.ptx.sreg.ntid.y";
+    } else if (ends_with(name, ".__grid_dim_x")) {
+        return "llvm.nvvm.read.ptx.sreg.nctaid.x";
+    } else if (ends_with(name, ".__grid_dim_y")) {
+        return "llvm.nvvm.read.ptx.sreg.nctaid.y";
     }
     internal_error << "simt_intrinsic called on bad variable name\n";
     return "";

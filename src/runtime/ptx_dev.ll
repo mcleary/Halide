@@ -412,16 +412,25 @@ define weak_odr i32 @dp2a_u32_u32(<4 x i16> %a, <4 x i8> %b, i32 %i) nounwind re
 }
 
 declare {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.a.row.f16.p0i8(i8 addrspace(0)* %src );
+declare {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.a.row.stride.f16.p0i8(i8 addrspace(0)* %src , i32 %stride);
 declare {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.b.row.f16.p0i8(i8 addrspace(0)* %src );
+declare {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.b.row.stride.f16.p0i8(i8 addrspace(0)* %src , i32 %stride);
 declare {float, float, float, float, float, float, float, float} @llvm.nvvm.wmma.m16n16k16.load.c.row.f32.p0i8(i8 addrspace(0)* %src );
+declare {float, float, float, float, float, float, float, float} @llvm.nvvm.wmma.m16n16k16.load.c.row.stride.f32.p0i8(i8 addrspace(0)* %src, i32 %stride );
 declare {float, float, float, float, float, float, float, float} @llvm.nvvm.wmma.m16n16k16.mma.row.row.f32.f32(
         <2 x half> %a0, <2 x half> %a1, <2 x half> %a2, <2 x half> %a3, <2 x half> %a4, <2 x half> %a5, <2 x half> %a6, <2 x half> %a7,
         <2 x half> %b0, <2 x half> %b1, <2 x half> %b2, <2 x half> %b3, <2 x half> %b4, <2 x half> %b5, <2 x half> %b6, <2 x half> %b7,
         float %c0, float %c1, float %c2, float %c3, float %c4, float %c5, float %c6, float %c7);
 declare void @llvm.nvvm.wmma.m16n16k16.store.d.row.f32.p0i8(i8 addrspace(0)* %src, float %d0, float %d1, float %d2, float %d3, float %d4, float %d5, float %d6, float %d7);
+declare void @llvm.nvvm.wmma.m16n16k16.store.d.row.stride.f32.p0i8(i8 addrspace(0)* %src, float %d0, float %d1, float %d2, float %d3, float %d4, float %d5, float %d6, float %d7, i32 %stride);
 
-define weak_odr i8 addrspace(0)* @wmma.m16n16k16.mma.f32.f32(i8 addrspace(0)* %a, i8 addrspace(0)* %b, i8 addrspace(0)* %c, i8 addrspace(0)* %d) nounwind readnone alwaysinline {
-    %v0 = call {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.a.row.f16.p0i8(i8 addrspace(0)* %a );
+define weak_odr void @wmma.m16n16k16.mma.f32.f32(
+    i8 addrspace(0)* %a, i32 %stride_a, i64 %offset_a,
+    i8 addrspace(0)* %b, i32 %stride_b, i64 %offset_b,
+    i8 addrspace(0)* %c, i32 %stride_c, i64 %offset_c,
+    i8 addrspace(0)* %d, i32 %stride_d, i64 %offset_d) nounwind readnone alwaysinline {
+    %addr_a = getelementptr inbounds i8, i8 addrspace(0)* %a, i64 %offset_a
+    %v0 = call {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.a.row.stride.f16.p0i8(i8 addrspace(0)* %addr_a, i32 %stride_a);
     %a0 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 0
     %a1 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 1
     %a2 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 2
@@ -431,7 +440,8 @@ define weak_odr i8 addrspace(0)* @wmma.m16n16k16.mma.f32.f32(i8 addrspace(0)* %a
     %a6 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 6
     %a7 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 7
 
-    %v1 = call {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.b.row.f16.p0i8(i8 addrspace(0)* %b );    
+    %addr_b = getelementptr inbounds i8, i8 addrspace(0)* %b, i64 %offset_b
+    %v1 = call {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.b.row.f16.p0i8(i8 addrspace(0)* %addr_b);
     %b0 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 0
     %b1 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 1
     %b2 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 2
@@ -441,7 +451,8 @@ define weak_odr i8 addrspace(0)* @wmma.m16n16k16.mma.f32.f32(i8 addrspace(0)* %a
     %b6 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 6
     %b7 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 7
 
-    %v2 = call {float, float, float, float, float, float, float, float} @llvm.nvvm.wmma.m16n16k16.load.c.row.f32.p0i8(i8 addrspace(0)* %c)
+    %addr_c = getelementptr inbounds i8, i8 addrspace(0)* %c, i64 %offset_c
+    %v2 = call {float, float, float, float, float, float, float, float} @llvm.nvvm.wmma.m16n16k16.load.c.row.stride.f32.p0i8(i8 addrspace(0)* %c, i32 %stride_c)
     %c0 = extractvalue {float, float, float, float, float, float, float, float} %v2, 0
     %c1 = extractvalue {float, float, float, float, float, float, float, float} %v2, 1
     %c2 = extractvalue {float, float, float, float, float, float, float, float} %v2, 2
@@ -464,7 +475,7 @@ define weak_odr i8 addrspace(0)* @wmma.m16n16k16.mma.f32.f32(i8 addrspace(0)* %a
     %d6 = extractvalue {float, float, float, float, float, float, float, float} %v3, 6
     %d7 = extractvalue {float, float, float, float, float, float, float, float} %v3, 7
 
-    call void @llvm.nvvm.wmma.m16n16k16.store.d.row.f32.p0i8(i8 addrspace(0)* %d, float %d0, float %d1, float %d2, float %d3, float %d4, float %d5, float %d6, float %d7);
-    ret i8 addrspace(0)* %d
+    %addr_d = getelementptr inbounds i8, i8 addrspace(0)* %d, i64 %offset_d
+    call void @llvm.nvvm.wmma.m16n16k16.store.d.row.stride.f32.p0i8(i8 addrspace(0)* %addr_d, float %d0, float %d1, float %d2, float %d3, float %d4, float %d5, float %d6, float %d7, i32 %stride_d);
+    ret void
 }
-
