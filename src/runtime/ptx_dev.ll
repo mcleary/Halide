@@ -441,7 +441,7 @@ define weak_odr void @wmma.m16n16k16.mma.f32.f32(
     %a7 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 7
 
     %addr_b = getelementptr inbounds i8, i8 addrspace(0)* %b, i64 %offset_b
-    %v1 = call {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.b.row.f16.p0i8(i8 addrspace(0)* %addr_b);
+    %v1 = call {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.b.row.stride.f16.p0i8(i8 addrspace(0)* %addr_b, i32 %stride_b);
     %b0 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 0
     %b1 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 1
     %b2 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 2
@@ -452,7 +452,7 @@ define weak_odr void @wmma.m16n16k16.mma.f32.f32(
     %b7 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 7
 
     %addr_c = getelementptr inbounds i8, i8 addrspace(0)* %c, i64 %offset_c
-    %v2 = call {float, float, float, float, float, float, float, float} @llvm.nvvm.wmma.m16n16k16.load.c.row.stride.f32.p0i8(i8 addrspace(0)* %c, i32 %stride_c)
+    %v2 = call {float, float, float, float, float, float, float, float} @llvm.nvvm.wmma.m16n16k16.load.c.row.stride.f32.p0i8(i8 addrspace(0)* %addr_c, i32 %stride_c)
     %c0 = extractvalue {float, float, float, float, float, float, float, float} %v2, 0
     %c1 = extractvalue {float, float, float, float, float, float, float, float} %v2, 1
     %c2 = extractvalue {float, float, float, float, float, float, float, float} %v2, 2

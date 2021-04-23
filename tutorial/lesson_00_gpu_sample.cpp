@@ -15,14 +15,14 @@ using namespace Halide::ConciseCasts;
 template<typename T>
 void InitMatrix(Buffer<T>& buffer)
 {
-	for (int i = 0; i < buffer.width(); ++i)
+	for (int y = 0; y < buffer.height(); ++y)
 	{
-		for (int j = 0; j < buffer.height(); ++j)
+		for (int x = 0; x < buffer.width(); ++x)
 		{
-			float v = i + j * buffer.width();
-			// v /= 512.0f;
-			v = 1.0f;
-			buffer(i, j) = static_cast<float16_t>(v);
+			float v = x + y * buffer.width();
+			v /= buffer.height() * buffer.width();
+			// v = 1.0f;
+			buffer(x, y) = static_cast<float16_t>(v);
 		}
 	}
 
@@ -47,9 +47,9 @@ int main()
 	try
 	{
 		// mk x kn
-		const int M = 32;
-		const int N = 32;
-		const int K = 32;
+		const int M = 64;
+		const int N = 64;
+		const int K = 64;
 		const int x_tile = 16;
 		const int y_tile = 16;
 
@@ -171,7 +171,7 @@ int main()
 		cout << "done" << endl;
 
 		cout << "Compiling to LLVM ... " << flush;
-		//out.compile_to_llvm_assembly("cuda.ll", {}, target);
+		// out.compile_to_llvm_assembly("cuda.ll", args, target);
 		cout << "done" << endl;
 
 		cout << "Compiling to Assembly ... " << flush;
@@ -195,18 +195,18 @@ int main()
 		Buffer<float> inputA = A.realize(rows, cols);
 		Buffer<float> inputB = B.realize(rows, cols);
 #endif
-		cout << "Input A: (" << inputA.height() << " x " << inputA.width() << ")" << endl;
+		cout << "Input A: (" << inputA.width() << " x " << inputA.height() << ")" << endl;
 		PrintBuffer(inputA);
 		cout << endl << endl;
 
-		cout << "Input B: (" << inputB.height() << " x " << inputB.width() << ")" << endl;
+		cout << "Input B: (" << inputB.width() << " x " << inputB.height() << ")" << endl;
 		PrintBuffer(inputB);
 		cout << endl << endl;
 
 		// Run it
 		Buffer<float> result = out.realize(M, N);
 
-		cout << "Result: (" << result.height() << " x " << result.width() << ")" << endl;
+		cout << "Result: (" << result.width() << " x " << result.height() << ")" << endl;
 		PrintBuffer(result);
 		cout << endl << endl;
 
