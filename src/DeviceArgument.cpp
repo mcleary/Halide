@@ -75,6 +75,46 @@ void HostClosure::visit(const Call *op) {
         ScopedBinding<> p1(ignore, bufname);
         ScopedBinding<> p2(ignore, bufname + ".buffer");
         Internal::Closure::visit(op);
+    } else if (op->call_type == Call::Intrinsic && op->name == "wmma_m16n16k16_mma_f32_f32") {
+        const Variable *var_a = op->args[0].as<Variable>();
+        std::string name_a = var_a->name;
+        Buffer &ref_a = buffers[name_a];
+        ref_a.type = var_a->type;
+        ref_a.dimensions = 2;
+        ref_a.read = true;
+
+        op->args[1].accept(this);
+        op->args[2].accept(this);
+
+        const Variable *var_b = op->args[3].as<Variable>();
+        std::string name_b = var_b->name;
+        Buffer &ref_b = buffers[name_b];
+        ref_b.type = var_b->type;
+        ref_b.dimensions = 2;
+        ref_b.read = true;
+
+        op->args[4].accept(this);
+        op->args[5].accept(this);
+
+        const Variable *var_c = op->args[6].as<Variable>();
+        std::string name_c = var_c->name;
+        Buffer &ref_c = buffers[name_c];
+        ref_c.type = var_c->type;
+        ref_c.dimensions = 2;
+        ref_c.read = true;
+
+        op->args[7].accept(this);
+        op->args[8].accept(this);
+
+        const Variable *var_d = op->args[9].as<Variable>();
+        std::string name_d = var_d->name;
+        Buffer &ref_d = buffers[name_d];
+        ref_c.type = var_d->type;
+        ref_c.dimensions = 2;
+        ref_c.write = true;
+
+        op->args[10].accept(this);
+        op->args[11].accept(this);
     } else {
         Internal::Closure::visit(op);
     }
