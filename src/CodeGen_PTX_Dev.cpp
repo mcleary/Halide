@@ -417,10 +417,6 @@ string CodeGen_PTX_Dev::simt_intrinsic(const string &name) {
         return "llvm.nvvm.read.ptx.sreg.ntid.x";
     } else if (ends_with(name, ".__block_dim_y")) {
         return "llvm.nvvm.read.ptx.sreg.ntid.y";
-    } else if (ends_with(name, ".__grid_dim_x")) {
-        return "llvm.nvvm.read.ptx.sreg.nctaid.x";
-    } else if (ends_with(name, ".__grid_dim_y")) {
-        return "llvm.nvvm.read.ptx.sreg.nctaid.y";
     }
     internal_error << "simt_intrinsic called on bad variable name\n";
     return "";
