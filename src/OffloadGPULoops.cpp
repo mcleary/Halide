@@ -126,8 +126,6 @@ class InjectGpuOffload : public IRMutator {
     using IRMutator::visit;
 
     Stmt visit(const For *loop) override {
-        /*IRPrinter printer(std::cout);
-        loop->accept(&printer);*/
 
         if (!CodeGen_GPU_Dev::is_gpu_var(loop->name)) {
             return IRMutator::visit(loop);
@@ -280,7 +278,16 @@ public:
             i.second->init_module();
         }
 
-        Stmt result = mutate(s);
+        Stmt result = s;
+        // TODO: Check if CUDACapability is 70 or higher
+        if (target.has_feature(Target::CUDACapability70)) {
+
+           debug(2) << "Extracting CUDA TensorCore Operations...\n";
+           result = ExtractTensorCoreOperations{}.mutate(s);
+           debug(2) << "After extracting TensorCore" << result << "\n";
+        }
+
+        result = mutate(result);
 
         for (auto &i : cgdev) {
             string api_unique_name = i.second->api_unique_name();

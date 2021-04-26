@@ -429,7 +429,8 @@ define weak_odr void @wmma.m16n16k16.mma.f32.f32(
     i8 addrspace(0)* %b, i32 %stride_b, i64 %offset_b,
     i8 addrspace(0)* %c, i32 %stride_c, i64 %offset_c,
     i8 addrspace(0)* %d, i32 %stride_d, i64 %offset_d) nounwind readnone alwaysinline {
-    %addr_a = getelementptr inbounds i8, i8 addrspace(0)* %a, i64 %offset_a
+    %offset_a_bytes = mul i64 2, %offset_a
+    %addr_a = getelementptr inbounds i8, i8 addrspace(0)* %a, i64 %offset_a_bytes
     %v0 = call {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.a.row.stride.f16.p0i8(i8 addrspace(0)* %addr_a, i32 %stride_a);
     %a0 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 0
     %a1 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 1
@@ -440,7 +441,8 @@ define weak_odr void @wmma.m16n16k16.mma.f32.f32(
     %a6 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 6
     %a7 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v0, 7
 
-    %addr_b = getelementptr inbounds i8, i8 addrspace(0)* %b, i64 %offset_b
+    %offset_b_bytes = mul i64 2, %offset_b
+    %addr_b = getelementptr inbounds i8, i8 addrspace(0)* %b, i64 %offset_b_bytes
     %v1 = call {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} @llvm.nvvm.wmma.m16n16k16.load.b.row.stride.f16.p0i8(i8 addrspace(0)* %addr_b, i32 %stride_b);
     %b0 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 0
     %b1 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 1
@@ -451,7 +453,8 @@ define weak_odr void @wmma.m16n16k16.mma.f32.f32(
     %b6 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 6
     %b7 = extractvalue {<2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>, <2 x half>} %v1, 7
 
-    %addr_c = getelementptr inbounds i8, i8 addrspace(0)* %c, i64 %offset_c
+    %offset_c_bytes = mul i64 4, %offset_c
+    %addr_c = getelementptr inbounds i8, i8 addrspace(0)* %c, i64 %offset_c_bytes
     %v2 = call {float, float, float, float, float, float, float, float} @llvm.nvvm.wmma.m16n16k16.load.c.row.stride.f32.p0i8(i8 addrspace(0)* %addr_c, i32 %stride_c)
     %c0 = extractvalue {float, float, float, float, float, float, float, float} %v2, 0
     %c1 = extractvalue {float, float, float, float, float, float, float, float} %v2, 1
@@ -475,7 +478,8 @@ define weak_odr void @wmma.m16n16k16.mma.f32.f32(
     %d6 = extractvalue {float, float, float, float, float, float, float, float} %v3, 6
     %d7 = extractvalue {float, float, float, float, float, float, float, float} %v3, 7
 
-    %addr_d = getelementptr inbounds i8, i8 addrspace(0)* %d, i64 %offset_d
+    %offset_d_bytes = mul i64 4, %offset_d
+    %addr_d = getelementptr inbounds i8, i8 addrspace(0)* %d, i64 %offset_d_bytes
     call void @llvm.nvvm.wmma.m16n16k16.store.d.row.stride.f32.p0i8(i8 addrspace(0)* %addr_d, float %d0, float %d1, float %d2, float %d3, float %d4, float %d5, float %d6, float %d7, i32 %stride_d);
     ret void
 }

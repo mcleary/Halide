@@ -15,13 +15,16 @@ using namespace Halide::ConciseCasts;
 template<typename T>
 void InitMatrix(Buffer<T>& buffer)
 {
-	for (int y = 0; y < buffer.height(); ++y)
+	const int rows = buffer.height();
+	const int cols = buffer.width();
+	for (int y = 0; y < rows; ++y)
 	{
-		for (int x = 0; x < buffer.width(); ++x)
+		for (int x = 0; x < cols; ++x)
 		{
-			float v = x + y * buffer.width();
-			v /= buffer.height() * buffer.width();
+			float v = x + y * cols;
+			v /= rows * cols;
 			// v = 1.0f;
+			// std::cout << x << ", " << y << " = " << v << std::endl;
 			buffer(x, y) = static_cast<float16_t>(v);
 		}
 	}
@@ -32,9 +35,11 @@ template<typename T>
 void PrintBuffer(const Buffer<T>& buffer)
 {
 	// Print the result.
-	for (int y = 0; y < buffer.height(); y++)
+	const int rows = buffer.height();
+	const int cols = buffer.width();
+	for (int y = 0; y < rows; ++y)
 	{
-		for (int x = 0; x < buffer.width(); x++)
+		for (int x = 0; x < cols; ++x)
 		{
 			printf("%5.2f ", (float)buffer(x, y));
 		}
@@ -47,9 +52,10 @@ int main()
 	try
 	{
 		// mk x kn
-		const int M = 64;
-		const int N = 64;
-		const int K = 64;
+		// rows (M) x columns (N)
+		const int M = 32;
+		const int N = 16;
+		const int K = 16;
 		const int x_tile = 16;
 		const int y_tile = 16;
 
@@ -91,7 +97,7 @@ int main()
 
 		Func matmul("matmul");
 		RDom r(0, K);
-		matmul(x, y) += f32((A(x, r)) * B(r, y));
+		matmul(x, y) += f32((A(r, y)) * B(x, r));
 		// matmul.trace_stores();
 
 		/*Func out("out");
@@ -101,7 +107,7 @@ int main()
 		Var blockX("blockX"), blockY("blockY"), threadX("threadX"), threadY("threadY");
 		out
 			.update()
-			.gpu_tile(x, y, blockX, blockY, threadX, threadY, x_tile, y_tile)
+			.gpu_tile(x, y, blockX, blockY, threadX, threadY, x_tile, y_tile, TailStrategy::Auto)
 			;
 
 		/*out
@@ -183,8 +189,8 @@ int main()
 		cout << "done" << endl;
 
 #if USE_PARAMS
-		Buffer<float16_t> inputA(M, K);
-		Buffer<float16_t> inputB(K, N);
+		Buffer<float16_t> inputA(K, M);
+		Buffer<float16_t> inputB(N, K);
 
 		InitMatrix(inputA);
 		InitMatrix(inputB);
@@ -195,35 +201,36 @@ int main()
 		Buffer<float> inputA = A.realize(rows, cols);
 		Buffer<float> inputB = B.realize(rows, cols);
 #endif
-		cout << "Input A: (" << inputA.width() << " x " << inputA.height() << ")" << endl;
+		cout << "Input A: (" << inputA.height() << " x " << inputA.width() << ")" << endl;
 		PrintBuffer(inputA);
 		cout << endl << endl;
 
-		cout << "Input B: (" << inputB.width() << " x " << inputB.height() << ")" << endl;
+		cout << "Input B: (" << inputB.height() << " x " << inputB.width() << ")" << endl;
 		PrintBuffer(inputB);
 		cout << endl << endl;
 
 		// Run it
-		Buffer<float> result = out.realize(M, N);
+		Buffer<float> result = out.realize(N, M);
 
-		cout << "Result: (" << result.width() << " x " << result.height() << ")" << endl;
+		cout << "Result: (" << result.height() << " x " << result.width() << ")" << endl;
 		PrintBuffer(result);
 		cout << endl << endl;
 
 		cout << "Comparing: " << endl;
-		for (int i = 0; i < M; ++i)
+		for (int y = 0; y < result.height(); ++y)
 		{
-			for (int j = 0; j < N; ++j)
+			for (int x = 0; x < result.width(); ++x)
 			{
 				float acc = 0.0f;
 				for (int k = 0; k < K; ++k)
 				{
-					float16_t a = inputA(i, k);
-					float16_t b = inputB(k, j);
+					float16_t a = inputA(k, y);
+					float16_t b = inputB(x, k);
 					// std::cout << a << " * " << b << " = " << (a * b) << std::endl;
 					acc += static_cast<float>(a * b);
 				}
-				expect_almost_equal("result(i, j)", "acc", "aa", result(i, j), acc, 4000);
+				const std::string result_str = "result(" + std::to_string(x) + ", " + std::to_string(y) + ")";
+				expect_almost_equal(result_str.c_str(), "acc", "aa", result(x, y), acc, 4000);
 
 				/*float diff = std::abs(result(i, j)) - std::abs(acc);
 				constexpr float epsilon = std::numeric_limits<float>::epsilon();
