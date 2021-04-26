@@ -202,223 +202,6 @@ private:
     }
 };
 
-class IsMatrixMultiply : public IRVisitor {
-    using IRVisitor::visit;
-
-public:
-    bool matmul_found = false;
-
-    Expr A;
-    Expr B;
-    Expr C;
-
-    void visit(const Store *store) override
-    {
-        /*IRPrinter p(std::cout);
-        store->accept(&p);
-        std::cout << std::endl
-                  << std::endl;*/
-
-        //  matmul[t26] = matmul[t26] + float32((float16(A[(A.stride.1*matmul.s1.r8$x) + t35])*float16(B[((B.stride.1*t34) - t33) + matmul.s1.r8$x])))
-        const Expr wild_f32x = Variable::make(Float(32), "*");
-        vector<Expr> matches;
-        const Expr acc_pattern = wild_f32x + wild_f32x;
-        if (expr_match(acc_pattern, store->value, matches))
-        {
-            // matmul[t26]
-            const Load *matmul_load = matches[0].as<Load>();
-
-            // float32((float16(A[(A.stride.1 * matmul.s1.r8$x) + t35]) * float16(B[((B.stride.1 * t34) - t33) + matmul.s1.r8$x])))
-            const Cast *cast = matches[1].as<Cast>();
-
-            if (matmul_load && cast) {
-                // Check if the load is loading from the same place where the store is storing
-                // i.e. if this is an update operation
-                if (matmul_load->name == store->name && equal(matmul_load->index, store->index))
-                {
-                    // Yes, this is an update operation, now let's check cast to see if it is a matmul that can be converted
-                    // to wmma intrinsic
-
-                    // (float16(A[(A.stride.1 * matmul.s1.r8$x) + t35]) * float16(B[((B.stride.1 * t34) - t33) + matmul.s1.r8$x]))
-                    const Expr wild_f16x = Variable::make(Float(16), "*");
-                    const Expr mul_pattern = wild_f16x * wild_f16x;
-                    if (expr_match(mul_pattern, cast->value, matches))
-                    {
-                        // TODO: Verify if matmul.s1.r8$x (RVar) is used in both A and B
-
-                        // A[(A.stride .1 * matmul.s1.r8$x) + t35]
-                        const Load *load_a = matches[0].as<Load>();
-                        // B[((B.stride.1 * t34) - t33) + matmul.s1.r8$x]
-                        const Load *load_b = matches[1].as<Load>();
-
-                        if (load_a && load_b)
-                        {
-                            matmul_found = true;
-
-                            A = load_a;
-                            B = load_b;
-                            C = matmul_load;
-
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-
-        return IRVisitor::visit(store);
-    }
-};
-
-class ExtractTensorCoreOperations : public IRMutator
-{
-    using IRMutator::visit;
-
-public:
-
-    int32_t M = -1;
-    int32_t N = -1;
-    int32_t K = -1;
-    int32_t num_tiles_k;
-    std::string rdom;
-
-    Expr block_id_y;
-    Expr block_id_x;
-    Expr block_dim_y;
-    Expr block_dim_x;
-    Expr grid_dim_x;
-    Expr grid_dim_y;
-    Expr block_size;
-
-    ExtractTensorCoreOperations()
-    {
-        block_id_y = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__block_id_y"), std::vector<Expr>(), Call::Extern);
-        block_id_x = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__block_id_x"), std::vector<Expr>(), Call::Extern);
-        block_dim_y = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__block_dim_y"), std::vector<Expr>(), Call::Extern);
-        block_dim_x = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__block_dim_x"), std::vector<Expr>(), Call::Extern);
-        grid_dim_x = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__grid_dim_x"), std::vector<Expr>(), Call::Extern);
-        grid_dim_y = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__grid_dim_y"), std::vector<Expr>(), Call::Extern);
-        block_size = block_dim_x * block_dim_y;
-    }
-
-    //                        // const int64_t block_size = block_dim_x * block_dim_y;
-    //                        // Expr offset = IntImm::make(Int(64), current_block_linear_id * block_size);
-    //                        Expr block_size = block_dim_x * block_dim_y;
-    //                        Expr offset_base = i64(block_id_y * grid_dim_x * block_size + block_id_x * block_dim_x);
-    //                        Expr offset_a = offset_base * i64(2);
-    //                        Expr offset_b = offset_base * i64(2);
-    //                        Expr offset_c = offset_base * i64(4);
-    //                        Expr stride = 32;
-
-    //                        Expr a_var = Variable::make(Handle(), load_a->name);
-    //                        Expr b_var = Variable::make(Handle(), load_b->name);
-    //                        Expr c_var = Variable::make(Handle(), load->name);
-
-    //                        Expr mma = Call::make(Handle(), "wmma_m16n16k16_mma_f32_f32", { a_var, stride, offset_a, b_var, stride, offset_b, c_var, stride, offset_c, c_var, stride, offset_c }, Call::Intrinsic);
-
-    //                        Stmt s = Evaluate::make(mma);
-
-    Expr calc_offset(Expr bidx, Expr bidy)
-    {
-        return i64(grid_dim_x * block_size * bidy + bidx * block_dim_x);
-    }
-
-    Stmt visit(const For* loop) override
-    {
-        /*IRPrinter p{std::cout};
-        loop->accept(&p);
-        std::cout << std::endl
-                  << std::endl;*/
-
-        // FIXME: This should really be checking  for the supported tile sizes in the GPU tile
-        // TODO: Please fix these ifs
-        const bool is_gpu_thread_var = CodeGen_GPU_Dev::is_gpu_thread_var(loop->name);
-
-        if (is_const_zero(loop->min) && is_const(loop->extent))
-        {
-            const int32_t loop_extent_value = loop->extent.as<IntImm>()->value;
-
-            if (is_gpu_thread_var)
-            {
-                if (ends_with(loop->name, ".__thread_id_x"))
-                {
-                    M = loop_extent_value;
-                }
-                else if (ends_with(loop->name, ".__thread_id_y"))
-                {
-                    N = loop_extent_value;
-                }
-            } else {
-                // TODO: Need this to verify if its really a matmul in visit(const Store*)
-                rdom = loop->name;
-
-                K = loop_extent_value;
-
-                // TODO: This is a temporary check to detect the shape m16n16k16
-                // Note that m and n are not currently being checked
-                // Check k
-
-                // Shape m16n16k16
-                if (M == 16 && N == 16 && K % 16 == 0) {
-                    num_tiles_k = K / 16;
-                    K = 16;
-
-                    // Now check the loop body to confirm this is a matrix multiply operation
-                    IsMatrixMultiply is_matrix_multiply;
-                    loop->body.accept(&is_matrix_multiply);
-
-                    if (is_matrix_multiply.matmul_found) {
-
-                        Expr global_M = block_dim_x * grid_dim_x;
-                        Expr global_N = block_dim_y * grid_dim_y;
-                        Expr global_K = num_tiles_k * K;
-
-                        std::vector<Stmt> wmma_ops;
-
-                        for (int32_t tile_k = 0; tile_k < num_tiles_k; ++tile_k)
-                        {
-                            Expr offset_a = calc_offset(tile_k, block_id_y) * i64(2);
-                            Expr offset_b = calc_offset(block_id_x, tile_k) * i64(2);
-                            Expr offset_c = calc_offset(block_id_x, block_id_y) * i64(4);
-                            // Expr offset_c = i64(16 * 4);
-
-                            // Expr stride_a = global_M;
-                            // Expr stride_b = global_K;
-                            // Expr stride_c = global_M;
-
-                            int32_t stride = 64;
-                            Expr stride_a = stride;
-                            Expr stride_b = stride;
-                            Expr stride_c = stride;
-
-                            // Make WMMA op
-                            Expr a_var = Variable::make(Handle(), is_matrix_multiply.A.as<Load>()->name);
-                            Expr b_var = Variable::make(Handle(), is_matrix_multiply.B.as<Load>()->name);
-                            Expr c_var = Variable::make(Handle(), is_matrix_multiply.C.as<Load>()->name);
-                            Expr mma = Call::make(Handle(), "wmma_m16n16k16_mma_f32_f32", {
-                                a_var, stride_a, offset_a,
-                                b_var, stride_b, offset_b,
-                                c_var, stride_c, offset_c,
-                                c_var, stride_c, offset_c}, Call::Intrinsic);
-
-                            wmma_ops.push_back(Evaluate::make(mma));
-                            // break;
-                        }
-
-                        Stmt b = Block::make(wmma_ops);
-                        // b.accept(&p);
-                        // std::cout << std::endl << std::endl;
-
-                        return b;
-                    }
-                }
-            }
-        }
-
-        return IRMutator::visit(loop);
-    }
-};
-
 void CodeGen_PTX_Dev::add_kernel(Stmt stmt,
                                  const std::string &name,
                                  const std::vector<DeviceArgument> &args) {
@@ -452,6 +235,11 @@ void CodeGen_PTX_Dev::add_kernel(Stmt stmt,
     entry_block = BasicBlock::Create(*context, "entry", function);
     builder->SetInsertPoint(entry_block);
 
+    IRPrinter p(std::cout);
+    stmt.accept(&p);
+    std::cout << std::endl
+              << std::endl;
+
     // Put the arguments in the symbol table
     vector<string> arg_sym_names;
     {
@@ -459,7 +247,7 @@ void CodeGen_PTX_Dev::add_kernel(Stmt stmt,
         for (auto &fn_arg : function->args()) {
 
             string arg_sym_name = args[i].name;
-            debug(2) << arg_sym_name << "\n";
+            debug(1) << arg_sym_name << "\n";
             sym_push(arg_sym_name, &fn_arg);
             fn_arg.setName(arg_sym_name);
             arg_sym_names.push_back(arg_sym_name);
@@ -467,14 +255,6 @@ void CodeGen_PTX_Dev::add_kernel(Stmt stmt,
             i++;
         }
     }
-
-    debug(1) << "Extracting TensorCore operations...\n";
-    // std::cout << "Before ExtractTensorCoreOperations: " << std::endl;
-    // IRPrinter p(std::cout);
-    //stmt.accept(&p);
-    stmt = ExtractTensorCoreOperations{}.mutate(stmt);
-    // std::cout << "After ExtractTensorCoreOperations: \n";
-    // stmt.accept(&p);
 
     // We won't end the entry block yet, because we'll want to add
     // some allocas to it later if there are local allocations. Start
@@ -1069,13 +849,9 @@ vector<char> CodeGen_PTX_Dev::compile_to_src() {
         input.replace(pos, what.size(), with.c_str());
     };
 
-
     std::string ptx_src(outstr.begin(), outstr.end());
-    // ptx_src.replace(".target sm_70", ".target sm_70, debug");
-    replace(ptx_src, ".target sm_70", ".target sm_70, debug");
-    ptx_src.append("\n.section  .debug_abbrev\n{\n\n}\n\n");
-        //    ptx_src.replace()
-
+    /*replace(ptx_src, ".target sm_70", ".target sm_70, debug");
+    ptx_src.append("\n.section  .debug_abbrev\n{\n\n}\n\n");*/
 
     vector<char> buffer(ptx_src.begin(), ptx_src.end());
 
@@ -1154,6 +930,160 @@ bool CodeGen_PTX_Dev::supports_atomic_add(const Type &t) const {
 }
 
 }  // namespace
+
+class IsMatrixMultiply : public IRVisitor {
+    using IRVisitor::visit;
+
+public:
+    bool matmul_found = false;
+
+    Expr A;
+    Expr B;
+    Expr C;
+
+    void visit(const Store *store) override {
+        //  matmul[t26] = matmul[t26] + float32((float16(A[(A.stride.1*matmul.s1.r8$x) + t35])*float16(B[((B.stride.1*t34) - t33) + matmul.s1.r8$x])))
+        const Expr wild_f32x = Variable::make(Float(32), "*");
+        vector<Expr> matches;
+        const Expr acc_pattern = wild_f32x + wild_f32x;
+        if (expr_match(acc_pattern, store->value, matches)) {
+            // matmul[t26]
+            const Load *matmul_load = matches[0].as<Load>();
+
+            // float32((float16(A[(A.stride.1 * matmul.s1.r8$x) + t35]) * float16(B[((B.stride.1 * t34) - t33) + matmul.s1.r8$x])))
+            const Cast *cast = matches[1].as<Cast>();
+
+            if (matmul_load && cast) {
+                // Check if the load is loading from the same place where the store is storing
+                // i.e. if this is an update operation
+                if (matmul_load->name == store->name && equal(matmul_load->index, store->index)) {
+                    // Yes, this is an update operation, now let's check cast to see if it is a matmul that can be converted
+                    // to wmma intrinsic
+
+                    // (float16(A[(A.stride.1 * matmul.s1.r8$x) + t35]) * float16(B[((B.stride.1 * t34) - t33) + matmul.s1.r8$x]))
+                    const Expr wild_f16x = Variable::make(Float(16), "*");
+                    const Expr mul_pattern = wild_f16x * wild_f16x;
+                    if (expr_match(mul_pattern, cast->value, matches)) {
+                        // TODO: Verify if matmul.s1.r8$x (RVar) is used in both A and B
+
+                        // A[(A.stride .1 * matmul.s1.r8$x) + t35]
+                        const Load *load_a = matches[0].as<Load>();
+                        // B[((B.stride.1 * t34) - t33) + matmul.s1.r8$x]
+                        const Load *load_b = matches[1].as<Load>();
+
+                        if (load_a && load_b) {
+                            matmul_found = true;
+
+                            A = load_a;
+                            B = load_b;
+                            C = matmul_load;
+
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        return IRVisitor::visit(store);
+    }
+};
+
+ExtractTensorCoreOperations::ExtractTensorCoreOperations() {
+    block_id_y = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__block_id_y"), std::vector<Expr>(), Call::Extern);
+    block_id_x = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__block_id_x"), std::vector<Expr>(), Call::Extern);
+    block_dim_y = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__block_dim_y"), std::vector<Expr>(), Call::Extern);
+    block_dim_x = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__block_dim_x"), std::vector<Expr>(), Call::Extern);
+    block_size = block_dim_x * block_dim_y;
+}
+
+Stmt ExtractTensorCoreOperations::visit(const For *loop) {
+    IRPrinter p{std::cout};
+    loop->accept(&p);
+    std::cout << std::endl
+              << std::endl;
+
+    // FIXME: This should really be checking  for the supported tile sizes in the GPU tile
+    const bool is_gpu_thread_var = CodeGen_GPU_Dev::is_gpu_thread_var(loop->name);
+    if (is_const_zero(loop->min) && is_const(loop->extent)) {
+        const int32_t loop_extent_value = loop->extent.as<IntImm>()->value;
+
+        if (is_gpu_thread_var) {
+            if (ends_with(loop->name, ".__thread_id_y")) {
+                M = loop_extent_value;
+            } else if (ends_with(loop->name, ".__thread_id_x")) {
+                N = loop_extent_value;
+            }
+        } else {
+            // TODO: Need this to verify if its really a matmul in visit(const Store*)
+            // rdom = loop->name;
+            K = loop_extent_value;
+
+            // Shape m16n16k16
+            if (M == 16 && N == 16 && K % 16 == 0) {
+                const int32_t num_tiles_k = K / 16;
+                K = 16;
+
+                // Now check the loop body to confirm this is a matrix multiply operation
+                IsMatrixMultiply is_matrix_multiply;
+                loop->body.accept(&is_matrix_multiply);
+
+                if (is_matrix_multiply.matmul_found) {
+                    const Load *load_a = is_matrix_multiply.A.as<Load>();
+                    const Load *load_b = is_matrix_multiply.B.as<Load>();
+                    const Load *load_c = is_matrix_multiply.C.as<Load>();
+
+                    Expr global_N = Variable::make(Int(32), load_c->name + ".extent.0");
+                    Expr global_K = num_tiles_k * K;
+
+                    Expr stride_a = global_K;
+                    Expr stride_b = global_N;
+                    Expr stride_c = global_N;
+
+                    Expr a_var = Variable::make(Handle(), load_a->name);
+                    Expr b_var = Variable::make(Handle(), load_b->name);
+                    Expr c_var = Variable::make(Handle(), load_c->name);
+
+                   /* auto fragment_offset = [&](Expr row_size, Expr row_tile_size, Expr bidx, Expr bidy) -> Expr {
+                        return i64((row_size / row_tile_size) * block_size * bidy + bidx * row_tile_size);
+                    };*/
+
+                    auto calc_offset_a = [&](Expr bidx, Expr bidy) -> Expr {
+                        return i64((global_K / K) * block_size * bidy + bidx * K);
+                    };
+
+                    auto calc_offset_b_c = [&](Expr bidx, Expr bidy) -> Expr {
+                        return i64((global_N / N) * block_size * bidy + bidx * N);
+                    };
+
+                    std::vector<Stmt> wmma_ops;
+                    for (int32_t tile_k = 0; tile_k < num_tiles_k; ++tile_k) {
+                        Expr offset_a = calc_offset_a(tile_k, block_id_y);
+                        Expr offset_b = calc_offset_b_c(block_id_x, tile_k);
+                        Expr offset_c = calc_offset_b_c(block_id_x, block_id_y);
+
+                        // Make WMMA op
+                        Expr mma = Call::make(Handle(), "wmma_m16n16k16_mma_f32_f32", {
+                            a_var, stride_a, offset_a,
+                            b_var, stride_b, offset_b,
+                            c_var, stride_c, offset_c,
+                            c_var, stride_c, offset_c}, Call::Intrinsic);
+
+                        wmma_ops.push_back(Evaluate::make(mma));
+                    }
+
+                    Stmt b = Block::make(wmma_ops);
+                    // b.accept(&p);
+                    // std::cout << std::endl << std::endl;
+
+                    return b;
+                }
+            }
+        }
+    }
+
+    return IRMutator::visit(loop);
+}
 
 std::unique_ptr<CodeGen_GPU_Dev> new_CodeGen_PTX_Dev(const Target &target) {
     return std::make_unique<CodeGen_PTX_Dev>(target);
