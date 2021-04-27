@@ -235,7 +235,7 @@ inline typename FloatingPoint<DataType>::RawBits unsigned_difference(
  *  - A sufficiently small number (denorms) will be nearly equal to 0.
  */
 template <typename DataType>
-inline void expect_almost_equal(
+inline bool expect_almost_equal(
     const char* lhs_expr, const char* rhs_expr, const char* max_ulps_expr,
     DataType const& lhs, DataType const& rhs, size_t const max_ulps) {
   using PrintableType = typename Printable<DataType>::type;
@@ -252,6 +252,7 @@ inline void expect_almost_equal(
            << "actual: " << rhs_expr << " (" << print_rhs << "), "
            << "ULPs: " << difference_in_ulps << " when testing with "
            << max_ulps_expr << " (" << max_ulps << ")" << std::endl;
-    exit(1);
+    return false;
   }
+  return true;
 }

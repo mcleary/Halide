@@ -235,11 +235,6 @@ void CodeGen_PTX_Dev::add_kernel(Stmt stmt,
     entry_block = BasicBlock::Create(*context, "entry", function);
     builder->SetInsertPoint(entry_block);
 
-    IRPrinter p(std::cout);
-    stmt.accept(&p);
-    std::cout << std::endl
-              << std::endl;
-
     // Put the arguments in the symbol table
     vector<string> arg_sym_names;
     {
@@ -994,12 +989,11 @@ ExtractTensorCoreOperations::ExtractTensorCoreOperations() {
 }
 
 Stmt ExtractTensorCoreOperations::visit(const For *loop) {
-    IRPrinter p{std::cout};
-    loop->accept(&p);
-    std::cout << std::endl
-              << std::endl;
+    // IRPrinter p{std::cout};
+    // loop->accept(&p);
+    // std::cout << std::endl
+    //            << std::endl;
 
-    // FIXME: This should really be checking  for the supported tile sizes in the GPU tile
     const bool is_gpu_thread_var = CodeGen_GPU_Dev::is_gpu_thread_var(loop->name);
     if (is_const_zero(loop->min) && is_const(loop->extent)) {
         const int32_t loop_extent_value = loop->extent.as<IntImm>()->value;
@@ -1039,10 +1033,6 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
                     Expr a_var = Variable::make(Handle(), load_a->name);
                     Expr b_var = Variable::make(Handle(), load_b->name);
                     Expr c_var = Variable::make(Handle(), load_c->name);
-
-                   /* auto fragment_offset = [&](Expr row_size, Expr row_tile_size, Expr bidx, Expr bidy) -> Expr {
-                        return i64((row_size / row_tile_size) * block_size * bidy + bidx * row_tile_size);
-                    };*/
 
                     auto calc_offset_a = [&](Expr bidx, Expr bidy) -> Expr {
                         return i64((global_K / K) * block_size * bidy + bidx * K);

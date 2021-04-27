@@ -279,6 +279,7 @@ public:
         }
 
         Stmt result = s;
+
         // TODO: Check if CUDACapability is 70 or higher
         if (target.has_feature(Target::CUDACapability70)) {
 
