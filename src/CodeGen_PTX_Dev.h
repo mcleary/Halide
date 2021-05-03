@@ -30,9 +30,6 @@ public:
     int32_t wmma_N = -1;
     int32_t wmma_K = -1;
 
-    int32_t tile_x = -1;
-    int32_t tile_y = -1;
-
     Expr thread_id_x;
     Expr thread_id_y;
     Expr block_id_x;

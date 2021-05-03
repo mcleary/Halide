@@ -901,7 +901,7 @@ public:
             }
         }
 
-        return IRVisitor::visit(store);
+        IRVisitor::visit(store);
     }
 };
 
@@ -923,19 +923,17 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
         if (is_gpu_thread_var) {
             if (ends_with(loop->name, ".__thread_id_y")) {
                 wmma_M = loop_extent_value;
-                tile_y = loop_extent_value;
             } else if (ends_with(loop->name, ".__thread_id_x")) {
                 wmma_N = loop_extent_value;
-                tile_x = loop_extent_value;
             }
         } else {
-            // TODO: Need this to verify if its really a matmul in visit(const Store*)
-            // rdom = loop->name;
             wmma_K = loop_extent_value;
 
             // Shape m16n16k16
+            // TODO: Note this won't work unless the extent of the inner loop is constant
+            //       How can the shape be detected if the k is not constant, i.e, if k
+            //       is based on the dimentions of matrix A for example
             if (wmma_M == 16 && wmma_N == 16 && wmma_K % 16 == 0) {
-            // if (tile_x == 16 && tile_y == 16) {
                 const int32_t num_tiles_k = wmma_K / 16;
                 wmma_K = 16;
 
@@ -960,9 +958,8 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
                     Expr b_var = Variable::make(Handle(), load_b->name);
                     Expr c_var = Variable::make(Handle(), load_c->name);
 
-                    // Creates a For to iterate over the K tiles to perform the matrix multiply accumulate
-                    // over the whole input matrix.
-
+                    // Calculates the global warp indices used to iterate over the k
+                    // tiles of the matrices
                     Expr warp_x = (block_id_x * block_dim_x + thread_id_x) / warp_size;
                     Expr warp_y = block_id_y * block_dim_y + thread_id_y;
 
@@ -970,6 +967,8 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
 #if INLINE_TILE_LOOP
                     std::vector<Stmt> wmma_ops;
                     for (int32_t tile_k = 0; tile_k < num_tiles_k; ++tile_k) {
+                        // Calculates the offsets to access tiles of matrices A, B and C
+                        // Note that the offsets are based on the global warp indices
                         Expr offset_a = i64(global_K * wmma_M * warp_y + wmma_K * tile_k);
                         Expr offset_b = i64(global_N * wmma_K * tile_k + wmma_N * warp_x);
                         Expr offset_c = i64(global_N * wmma_M * warp_y + wmma_N * warp_x);
@@ -991,6 +990,8 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
                     // Creates a for to loop over the k tiles to perform the matrix multiply accumulate
                     Expr tile_k = Variable::make(Int(32), "tile_k");
 
+                    // Calculates the offsets to access tiles of matrices A, B and C
+                    // Note that the offsets are based on the global warp indices
                     Expr offset_a = i64(global_K * wmma_M * warp_y + wmma_K * tile_k);
                     Expr offset_b = i64(global_N * wmma_K * tile_k + wmma_N * warp_x);
                     Expr offset_c = i64(global_N * wmma_M * warp_y + wmma_N * warp_x);
@@ -1021,7 +1022,7 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
     if (tensorcore_op_found)
     {
         // We have a tensorcore loop, now calculate the correct number of blocks/threads
-        // required to perform the matrix multiply
+        // required to perform the matrix multiplies
 
         const bool is_gpu_var = CodeGen_GPU_Dev::is_gpu_var(loop->name);
         if (is_gpu_var) {
