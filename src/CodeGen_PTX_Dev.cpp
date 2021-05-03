@@ -110,7 +110,7 @@ protected:
 
     bool supports_atomic_add(const Type &t) const override;
 
-    std::map<std::string, llvm::Function*> wmma_intrinsics;
+    std::map<std::string, llvm::Function *> wmma_intrinsics;
 };
 
 CodeGen_PTX_Dev::CodeGen_PTX_Dev(const Target &host)
@@ -134,73 +134,6 @@ Type CodeGen_PTX_Dev::upgrade_type_for_storage(const Type &t) const {
     }
     return CodeGen_LLVM::upgrade_type_for_storage(t);
 }
-
-// Sniff the contents of a kernel to extracts the bounds of all the
-// thread indices (so we know how many threads to launch), and the
-// amount of shared memory to allocate.
-class ExtractBounds : public IRVisitor {
-public:
-    Expr num_threads[4];
-    Expr num_blocks[4];
-    Expr shared_mem_size;
-
-    ExtractBounds()
-        : shared_mem_size(0) {
-        for (int i = 0; i < 4; i++) {
-            num_threads[i] = num_blocks[i] = 1;
-        }
-    }
-
-private:
-    bool found_shared = false;
-
-    using IRVisitor::visit;
-
-    void visit(const For *op) override {
-        if (CodeGen_GPU_Dev::is_gpu_var(op->name)) {
-            internal_assert(is_const_zero(op->min));
-        }
-
-        if (ends_with(op->name, ".__thread_id_x")) {
-            num_threads[0] = op->extent;
-        } else if (ends_with(op->name, ".__thread_id_y")) {
-            num_threads[1] = op->extent;
-        } else if (ends_with(op->name, ".__thread_id_z")) {
-            num_threads[2] = op->extent;
-        } else if (ends_with(op->name, ".__thread_id_w")) {
-            num_threads[3] = op->extent;
-        } else if (ends_with(op->name, ".__block_id_x")) {
-            num_blocks[0] = op->extent;
-        } else if (ends_with(op->name, ".__block_id_y")) {
-            num_blocks[1] = op->extent;
-        } else if (ends_with(op->name, ".__block_id_z")) {
-            num_blocks[2] = op->extent;
-        } else if (ends_with(op->name, ".__block_id_w")) {
-            num_blocks[3] = op->extent;
-        }
-
-        op->body.accept(this);
-    }
-
-    void visit(const LetStmt *op) override {
-        if (expr_uses_var(shared_mem_size, op->name)) {
-            shared_mem_size = Let::make(op->name, op->value, shared_mem_size);
-        }
-        op->body.accept(this);
-    }
-
-    void visit(const Allocate *allocate) override {
-        user_assert(!allocate->new_expr.defined()) << "Allocate node inside GPU kernel has custom new expression.\n"
-                                                   << "(Memoization is not supported inside GPU kernels at present.)\n";
-
-        if (allocate->memory_type == MemoryType::GPUShared) {
-            internal_assert(allocate->extents.size() == 1);
-            shared_mem_size += allocate->extents[0] * allocate->type.bytes();
-            found_shared = true;
-        }
-        allocate->body.accept(this);
-    }
-};
 
 void CodeGen_PTX_Dev::add_kernel(Stmt stmt,
                                  const std::string &name,
@@ -293,17 +226,15 @@ void CodeGen_PTX_Dev::add_kernel(Stmt stmt,
     }
 }
 
-void CodeGen_PTX_Dev::init_module()
-{
+void CodeGen_PTX_Dev::init_module() {
     init_context();
 
     module = get_initial_module_for_ptx_device(target, context);
 
-    struct Intrinsic
-    {
-        const char* name;
+    struct Intrinsic {
+        const char *name;
         Type ret_type;
-        const char* intrin_name;
+        const char *intrin_name;
         vector<Type> arg_types;
     };
 
@@ -318,36 +249,31 @@ void CodeGen_PTX_Dev::init_module()
         {"dp2a", UInt(32), "dp2a_u32_u32", {UInt(16, 4), UInt(8, 4), UInt(32)}},
     };
 
-    for (auto&& i : ptx_intrins)
-    {
-        auto* fn = declare_intrin_overload(i.name, i.ret_type, i.intrin_name, std::move(i.arg_types));
+    for (auto &&i : ptx_intrins) {
+        auto *fn = declare_intrin_overload(i.name, i.ret_type, i.intrin_name, std::move(i.arg_types));
         fn->addFnAttr(llvm::Attribute::ReadNone);
         fn->addFnAttr(llvm::Attribute::NoUnwind);
     }
 
-    struct WMMAIntrinsic
-    {
-        const char* name;
-        const char* intrin_name;
+    struct WMMAIntrinsic {
+        const char *name;
+        const char *intrin_name;
         vector<Type> arg_types;
     };
 
     WMMAIntrinsic ptx_wmma_intrins[] = {
-        {"wmma_m16n16k16_mma_f32_f32", "wmma.m16n16k16.mma.f32.f32", {Handle(), Int(32), Int(64), Handle(), Int(32), Int(64), Handle(), Int(32), Int(64), Handle(), Int(64)}}
-    };
+        {"wmma_m16n16k16_mma_f32_f32", "wmma.m16n16k16.mma.f32.f32", {Handle(), Int(32), Int(64), Handle(), Int(32), Int(64), Handle(), Int(32), Int(64), Handle(), Int(64)}}};
 
-    for (auto&& i : ptx_wmma_intrins)
-    {
-        std::vector<llvm::Type*> arg_types;
+    for (auto &&i : ptx_wmma_intrins) {
+        std::vector<llvm::Type *> arg_types;
         arg_types.reserve(i.arg_types.size());
-        for (int arg_type_index = 0; arg_type_index < i.arg_types.size(); ++arg_type_index)
-        {
+        for (int arg_type_index = 0; arg_type_index < i.arg_types.size(); ++arg_type_index) {
             arg_types.push_back(llvm_type_of(i.arg_types[arg_type_index]));
         }
 
         // llvm::StructType* ret_type_struct = llvm::StructType::create(*context, ret_type_members);
-        llvm::Type* void_ret_type = llvm::Type::getVoidTy(*context);
-        llvm::Function* fn = get_llvm_intrin(void_ret_type, i.intrin_name, arg_types);
+        llvm::Type *void_ret_type = llvm::Type::getVoidTy(*context);
+        llvm::Function *fn = get_llvm_intrin(void_ret_type, i.intrin_name, arg_types);
         fn->addFnAttr(llvm::Attribute::ReadNone);
         fn->addFnAttr(llvm::Attribute::NoUnwind);
 
@@ -375,16 +301,15 @@ void CodeGen_PTX_Dev::visit(const Call *op) {
         value = call_overloaded_intrin(op->type, op->name, op->args);
         internal_assert(value) << Expr(op) << "\n";
     } else if (op->name == "wmma_m16n16k16_mma_f32_f32") {
-        llvm::Function* wmma_func = wmma_intrinsics[op->name];
+        llvm::Function *wmma_func = wmma_intrinsics[op->name];
 
-        vector<Value*> arg_values(op->args.size());
-        for (size_t i = 0; i < op->args.size(); i++)
-        {
+        vector<Value *> arg_values(op->args.size());
+        for (size_t i = 0; i < op->args.size(); i++) {
             arg_values[i] = codegen(op->args[i]);
         }
 
         // TODO: Call the WMMA intrinsic
-        llvm::Type* void_type = llvm::Type::getVoidTy(*context);
+        llvm::Type *void_type = llvm::Type::getVoidTy(*context);
         value = call_intrin(void_type, 1, wmma_func, arg_values);
     } else {
         CodeGen_LLVM::visit(op);
@@ -841,8 +766,8 @@ vector<char> CodeGen_PTX_Dev::compile_to_src() {
     };
 
     std::string ptx_src(outstr.begin(), outstr.end());
-    /*replace(ptx_src, ".target sm_70", ".target sm_70, debug");
-    ptx_src.append("\n.section  .debug_abbrev\n{\n\n}\n\n");*/
+    replace(ptx_src, ".target sm_70", ".target sm_70, debug");
+    ptx_src.append("\n.section  .debug_abbrev\n{\n\n}\n\n");
 
     vector<char> buffer(ptx_src.begin(), ptx_src.end());
 
@@ -981,6 +906,8 @@ public:
 };
 
 ExtractTensorCoreOperations::ExtractTensorCoreOperations() {
+    thread_id_y = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__thread_id_y"), std::vector<Expr>(), Call::Extern);
+    thread_id_x = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__thread_id_x"), std::vector<Expr>(), Call::Extern);
     block_id_y = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__block_id_y"), std::vector<Expr>(), Call::Extern);
     block_id_x = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__block_id_x"), std::vector<Expr>(), Call::Extern);
     block_dim_y = Call::make(Int(32), CodeGen_PTX_Dev::simt_intrinsic(".__block_dim_y"), std::vector<Expr>(), Call::Extern);
@@ -989,30 +916,28 @@ ExtractTensorCoreOperations::ExtractTensorCoreOperations() {
 }
 
 Stmt ExtractTensorCoreOperations::visit(const For *loop) {
-    // IRPrinter p{std::cout};
-    // loop->accept(&p);
-    // std::cout << std::endl
-    //            << std::endl;
-
     const bool is_gpu_thread_var = CodeGen_GPU_Dev::is_gpu_thread_var(loop->name);
     if (is_const_zero(loop->min) && is_const(loop->extent)) {
         const int32_t loop_extent_value = loop->extent.as<IntImm>()->value;
 
         if (is_gpu_thread_var) {
             if (ends_with(loop->name, ".__thread_id_y")) {
-                M = loop_extent_value;
+                wmma_M = loop_extent_value;
+                tile_y = loop_extent_value;
             } else if (ends_with(loop->name, ".__thread_id_x")) {
-                N = loop_extent_value;
+                wmma_N = loop_extent_value;
+                tile_x = loop_extent_value;
             }
         } else {
             // TODO: Need this to verify if its really a matmul in visit(const Store*)
             // rdom = loop->name;
-            K = loop_extent_value;
+            wmma_K = loop_extent_value;
 
             // Shape m16n16k16
-            if (M == 16 && N == 16 && K % 16 == 0) {
-                const int32_t num_tiles_k = K / 16;
-                K = 16;
+            if (wmma_M == 16 && wmma_N == 16 && wmma_K % 16 == 0) {
+            // if (tile_x == 16 && tile_y == 16) {
+                const int32_t num_tiles_k = wmma_K / 16;
+                wmma_K = 16;
 
                 // Now check the loop body to confirm this is a matrix multiply operation
                 IsMatrixMultiply is_matrix_multiply;
@@ -1023,8 +948,9 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
                     const Load *load_b = is_matrix_multiply.B.as<Load>();
                     const Load *load_c = is_matrix_multiply.C.as<Load>();
 
-                    Expr global_N = Variable::make(Int(32), load_c->name + ".extent.0");
-                    Expr global_K = num_tiles_k * K;
+                    global_M = Variable::make(Int(32), load_c->name + ".extent.1");
+                    global_N = Variable::make(Int(32), load_c->name + ".extent.0");
+                    global_K = num_tiles_k * wmma_K;
 
                     Expr stride_a = global_K;
                     Expr stride_b = global_N;
@@ -1034,41 +960,105 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
                     Expr b_var = Variable::make(Handle(), load_b->name);
                     Expr c_var = Variable::make(Handle(), load_c->name);
 
-                    auto calc_offset_a = [&](Expr bidx, Expr bidy) -> Expr {
-                        return i64((global_K / K) * block_size * bidy + bidx * K);
-                    };
+                    // Creates a For to iterate over the K tiles to perform the matrix multiply accumulate
+                    // over the whole input matrix.
 
-                    auto calc_offset_b_c = [&](Expr bidx, Expr bidy) -> Expr {
-                        return i64((global_N / N) * block_size * bidy + bidx * N);
-                    };
+                    Expr warp_x = (block_id_x * block_dim_x + thread_id_x) / warp_size;
+                    Expr warp_y = block_id_y * block_dim_y + thread_id_y;
 
+#define INLINE_TILE_LOOP 0
+#if INLINE_TILE_LOOP
                     std::vector<Stmt> wmma_ops;
                     for (int32_t tile_k = 0; tile_k < num_tiles_k; ++tile_k) {
-                        Expr offset_a = calc_offset_a(tile_k, block_id_y);
-                        Expr offset_b = calc_offset_b_c(block_id_x, tile_k);
-                        Expr offset_c = calc_offset_b_c(block_id_x, block_id_y);
+                        Expr offset_a = i64(global_K * wmma_M * warp_y + wmma_K * tile_k);
+                        Expr offset_b = i64(global_N * wmma_K * tile_k + wmma_N * warp_x);
+                        Expr offset_c = i64(global_N * wmma_M * warp_y + wmma_N * warp_x);
 
+                            // clang-format off
                         // Make WMMA op
                         Expr mma = Call::make(Handle(), "wmma_m16n16k16_mma_f32_f32", {
                             a_var, stride_a, offset_a,
                             b_var, stride_b, offset_b,
                             c_var, stride_c, offset_c,
                             c_var, stride_c, offset_c}, Call::Intrinsic);
+                        // clang-format on
 
                         wmma_ops.push_back(Evaluate::make(mma));
                     }
+                    Stmt tiled_for = Block::make(wmma_ops);
+#else
 
-                    Stmt b = Block::make(wmma_ops);
-                    // b.accept(&p);
-                    // std::cout << std::endl << std::endl;
+                    // Creates a for to loop over the k tiles to perform the matrix multiply accumulate
+                    Expr tile_k = Variable::make(Int(32), "tile_k");
 
-                    return b;
+                    Expr offset_a = i64(global_K * wmma_M * warp_y + wmma_K * tile_k);
+                    Expr offset_b = i64(global_N * wmma_K * tile_k + wmma_N * warp_x);
+                    Expr offset_c = i64(global_N * wmma_M * warp_y + wmma_N * warp_x);
+
+                    // clang-format off
+                    // Make WMMA op
+                    Expr mma = Call::make(Handle(), "wmma_m16n16k16_mma_f32_f32", {
+                        a_var, stride_a, offset_a,
+                        b_var, stride_b, offset_b,
+                        c_var, stride_c, offset_c,
+                        c_var, stride_c, offset_c}, Call::Intrinsic);
+                    // clang-format on
+
+                    Stmt tiled_for = For::make("tile_k", 0, num_tiles_k, loop->for_type, loop->device_api, Evaluate::make(mma));
+
+#endif  // INLINE_TILE_LOOP
+
+                    tensorcore_op_found = true;
+
+                    return tiled_for;
                 }
             }
         }
     }
 
-    return IRMutator::visit(loop);
+    Stmt s = IRMutator::visit(loop);
+
+    if (tensorcore_op_found)
+    {
+        // We have a tensorcore loop, now calculate the correct number of blocks/threads
+        // required to perform the matrix multiply
+
+        const bool is_gpu_var = CodeGen_GPU_Dev::is_gpu_var(loop->name);
+        if (is_gpu_var) {
+            Expr num_tiles_x = global_N / wmma_N;
+            Expr num_tiles_y = global_M / wmma_M;
+
+            // TODO: This will effectively launch 1 block for each 16x16 tile of the input matrix.
+            //       This works but its probably not very efficient.
+            //       Need to find a way to calculate the maximum possible block size to maximize
+            //       stream multiprocessors load
+            Expr max_threads_x = i32(1);
+            Expr max_threads_y = i32(1);
+
+            Expr num_threads_x = min(max_threads_x, num_tiles_x) * warp_size;
+            Expr num_threads_y = min(max_threads_y, num_tiles_y);
+
+            Expr num_blocks_x = (global_N + (wmma_N * num_threads_x / warp_size - 1)) / (wmma_N * num_threads_x / warp_size);
+            Expr num_blocks_y = (global_M + wmma_M * num_threads_y - 1) / (wmma_N * num_threads_y);
+
+            const For *for_loop = s.as<For>();
+
+            Expr new_extent;
+            if (ends_with(for_loop->name, ".__block_id_y")) {
+                new_extent = num_blocks_y;
+            } else if (ends_with(for_loop->name, ".__block_id_x")) {
+                new_extent = num_blocks_x;
+            } else if (ends_with(for_loop->name, ".__thread_id_y")) {
+                new_extent = num_threads_y;
+            } else if (ends_with(for_loop->name, ".__thread_id_x")) {
+                new_extent = num_threads_x;
+            }
+
+            s = For::make(for_loop->name, for_loop->min, new_extent, for_loop->for_type, for_loop->device_api, for_loop->body);
+        }
+    }
+
+    return s;
 }
 
 std::unique_ptr<CodeGen_GPU_Dev> new_CodeGen_PTX_Dev(const Target &target) {
@@ -1086,3 +1076,4 @@ std::unique_ptr<CodeGen_GPU_Dev> new_CodeGen_PTX_Dev(const Target &target) {
 
 }  // namespace Internal
 }  // namespace Halide
+

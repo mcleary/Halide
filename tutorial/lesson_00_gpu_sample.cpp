@@ -10,7 +10,14 @@ using namespace Halide;
 using namespace Halide::ConciseCasts;
 
 
-#define USE_PARAMS 1
+ImageParam A(Float(16), 2, "A");
+ImageParam B(Float(16), 2, "B");
+Func out("matmul");
+
+const bool test_single = true;
+const bool verbose = false;
+const bool print_outputs = false;
+const bool print_to_file = false;
 
 template<typename T>
 void InitMatrix(Buffer<T>& buffer)
@@ -32,8 +39,14 @@ void InitMatrix(Buffer<T>& buffer)
 }
 
 template<typename T>
-void PrintBuffer(const Buffer<T>& buffer)
+void PrintBuffer(const Buffer<T>& buffer, const std::string& filename = "buffer.txt")
 {
+	FILE* file = nullptr;
+	if (print_to_file)
+	{
+		file = fopen(filename.c_str(), "w");
+	}
+
 	// Print the result.
 	const int rows = buffer.height();
 	const int cols = buffer.width();
@@ -42,17 +55,24 @@ void PrintBuffer(const Buffer<T>& buffer)
 		for (int x = 0; x < cols; ++x)
 		{
 			printf("%5.2f ", (float)buffer(x, y));
+			if (print_to_file)
+			{
+				fprintf(file, "%5.2f ", (float)buffer(x, y));
+			}
 		}
 		printf("\n");
+		if (print_to_file)
+		{
+			fprintf(file, "\n");
+		}
+	}
+
+	if (print_to_file)
+	{
+		fclose(file);
 	}
 }
 
-ImageParam A(Float(16), 2, "A");
-ImageParam B(Float(16), 2, "B");
-Func out("matmul");
-
-const bool test_single = false;
-const bool verbose = test_single;
 
 // mk x kn
 // rows (M) x columns (N)
@@ -65,11 +85,6 @@ void TestMatMul(int M, int N, int K)
 		const int x_tile = 16;
 		const int y_tile = 16;
 
-		const int warp_size = 32;
-		const int vec_size = 2;
-		const int y_unroll = 1;
-		const int r_unroll = 1;
-
 		Target target = get_host_target();
 		Target jitTarget = get_jit_target_from_environment();
 
@@ -81,14 +96,12 @@ void TestMatMul(int M, int N, int K)
 		{
 			// Enable debugging hopefully to see the CUDA API calls
 			target.set_feature(Target::Debug);
+
+			cout << "Halide Host Target: " << target << endl;
+			cout << "Halide JIT Target : " << jitTarget << endl;
 		}
 
-		cout << "Halide Host Target: " << target << endl;
-		cout << "Halide JIT Target : " << jitTarget << endl;
-
-		Var x("x"), y("y"), xo("xo"), xi("xi"), yo("yo"), yi("y1");
-		Var xio("xio"), xii("xii"), yii("xii"), x_pair("x_pair"), xiio("xiio"), ty("ty");
-		RVar rxo("rxo"), rxi("rxi");
+		Var x("x"), y("y");
 
 		Func matmul("matmul");
 		RDom k(0, K, "k");
@@ -100,6 +113,10 @@ void TestMatMul(int M, int N, int K)
 		out
 			.update()
 			.gpu_tile(x, y, blockX, blockY, threadX, threadY, x_tile, y_tile, TailStrategy::Auto)
+
+			/*.tile(x, y, blockX, blockY, threadX, threadY, x_tile, y_tile)
+			.gpu_blocks(blockX, blockY)
+			.gpu_threads(threadX, threadY)*/
 			;
 
 		if (verbose)
@@ -144,24 +161,24 @@ void TestMatMul(int M, int N, int K)
 		A.set(inputA);
 		B.set(inputB);
 
-		if (verbose)
+		if (verbose && print_outputs)
 		{
 			cout << "Input A: (" << inputA.height() << " x " << inputA.width() << ")" << endl;
-			PrintBuffer(inputA);
+			PrintBuffer(inputA, "inputA.txt");
 			cout << endl << endl;
 
 			cout << "Input B: (" << inputB.height() << " x " << inputB.width() << ")" << endl;
-			PrintBuffer(inputB);
+			PrintBuffer(inputB, "inputB.txt");
 			cout << endl << endl;
 		}
 
 		// Run it
 		Buffer<float> result = out.realize(N, M, target);
 
-		if (verbose)
+		if (verbose && print_outputs)
 		{
 			cout << "Result: (" << result.height() << " x " << result.width() << ")" << endl;
-			PrintBuffer(result);
+			PrintBuffer(result, "result.txt");
 			cout << endl << endl;
 		}
 
@@ -180,10 +197,7 @@ void TestMatMul(int M, int N, int K)
 				const std::string result_str = "result(" + std::to_string(x) + ", " + std::to_string(y) + ")";
 				if (!expect_almost_equal(result_str.c_str(), "acc", "aa", result(x, y), acc, 4000))
 				{
-					std::cout << "-----------------" << std::endl;
-					std::cout << "M: " << M << " N: " << N << " K: " << K << std::endl;
-					std::cout << "-----------------" << std::endl;
-					return;
+					exit(1);
 				}
 			}
 		}
@@ -210,14 +224,21 @@ int main()
 
 		if (test_single)
 		{
-			const int m = 16;
-			const int n = 16;
-			const int k = 16;
-			TestMatMul(m, n, k);
+			// mk x kn = mn
+			const int min_size = 256;
+			const int max_size = 256;
+			const int m = max_size;
+			const int n = max_size;
+			const int k = max_size;
+
+			for (int s = min_size; s <= max_size; s += 16)
+			{
+				TestMatMul(s, s, s);
+			}
 		}
 		else
 		{
-			const int max_size = 64;
+			const int max_size = 1024;
 			const int tile_size = 16;
 			for (int m = 16; m <= max_size; m += tile_size)
 			{

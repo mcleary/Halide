@@ -20,17 +20,29 @@ struct CodeGen_GPU_Dev;
 class ExtractTensorCoreOperations : public IRMutator {
     using IRMutator::visit;
 
-    int32_t M = -1;
-    int32_t N = -1;
-    int32_t K = -1;
+public:
 
+    Expr global_M;
+    Expr global_N;
+    Expr global_K;
+
+    int32_t wmma_M = -1;
+    int32_t wmma_N = -1;
+    int32_t wmma_K = -1;
+
+    int32_t tile_x = -1;
+    int32_t tile_y = -1;
+
+    Expr thread_id_x;
+    Expr thread_id_y;
     Expr block_id_x;
     Expr block_id_y;
     Expr block_dim_x;
     Expr block_dim_y;
     Expr block_size;
+    const int32_t warp_size = 32;
 
-public:
+    bool tensorcore_op_found = false;
 
     ExtractTensorCoreOperations();
 

@@ -61,27 +61,11 @@ struct NumFractionBits {
   static constexpr size_t value = std::numeric_limits<DataType>::digits - 1;
 };
 
-#ifdef SNN_USE_HALF
-template <>
-struct NumFractionBits<cl::sycl::half> {
-  static constexpr size_t value = 10;
-};
-#endif  // SNN_USE_HALF
-
 /** Provide a safe type that can be piped to an ostream. */
 template <typename DataType>
 struct Printable {
   using type = DataType;
 };
-
-#ifdef SNN_USE_HALF
-// Trying to pipe a half to an ostream can cause ambiguous function errors, so
-// explicitly use float as the printable type.
-template <>
-struct Printable<cl::sycl::half> {
-  using type = float;
-};
-#endif  // SNN_USE_HALF
 
 /**
  * Struct for handling exponent/fraction sizes for different types like
@@ -247,11 +231,13 @@ inline bool expect_almost_equal(
   if (x.is_NaN() || y.is_NaN() || difference_in_ulps > max_ulps) {
     PrintableType print_lhs = lhs;
     PrintableType print_rhs = rhs;
+    std::cout << "\n\n-----------------------------" << std::endl;
     std::cout
            << "  expected: " << lhs_expr << " (" << print_lhs << "), "
            << "actual: " << rhs_expr << " (" << print_rhs << "), "
            << "ULPs: " << difference_in_ulps << " when testing with "
            << max_ulps_expr << " (" << max_ulps << ")" << std::endl;
+    std::cout << "-----------------------------\n\n" << std::endl;
     return false;
   }
   return true;
