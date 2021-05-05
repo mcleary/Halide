@@ -9,7 +9,6 @@ using namespace std;
 using namespace Halide;
 using namespace Halide::ConciseCasts;
 
-
 ImageParam A(Float(16), 2, "A");
 ImageParam B(Float(16), 2, "B");
 Func out("matmul");
@@ -32,7 +31,7 @@ void InitMatrix(Buffer<T>& buffer)
 			v /= rows * cols;
 			// v = 1.0f;
 			// std::cout << x << ", " << y << " = " << v << std::endl;
-			buffer(x, y) = static_cast<float16_t>(v);
+			buffer(x, y) = static_cast<T>(v);
 		}
 	}
 

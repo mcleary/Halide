@@ -857,8 +857,14 @@ public:
     Expr B;
     Expr C;
 
+    std::string k_var_name;
+
+    IsMatrixMultiply(std::string k_var)
+        : k_var_name{std::move(k_var)} {
+    }
+
     void visit(const Store *store) override {
-        //  matmul[t26] = matmul[t26] + float32((float16(A[(A.stride.1*matmul.s1.r8$x) + t35])*float16(B[((B.stride.1*t34) - t33) + matmul.s1.r8$x])))
+        //  matmul$1[t26] = matmul$1[t26] + float32((A[((A.stride.1*t34) - t33) + matmul$1.s1.k$x]*B[(B.stride.1*matmul$1.s1.k$x) + t35]))
         const Expr wild_f32x = Variable::make(Float(32), "*");
         vector<Expr> matches;
         const Expr acc_pattern = wild_f32x + wild_f32x;
@@ -866,7 +872,7 @@ public:
             // matmul[t26]
             const Load *matmul_load = matches[0].as<Load>();
 
-            // float32((float16(A[(A.stride.1 * matmul.s1.r8$x) + t35]) * float16(B[((B.stride.1 * t34) - t33) + matmul.s1.r8$x])))
+            // float32((A[((A.stride.1*t34) - t33) + matmul$1.s1.k$x]*B[(B.stride.1*matmul$1.s1.k$x) + t35]))
             const Cast *cast = matches[1].as<Cast>();
 
             if (matmul_load && cast) {
@@ -876,25 +882,33 @@ public:
                     // Yes, this is an update operation, now let's check cast to see if it is a matmul that can be converted
                     // to wmma intrinsic
 
-                    // (float16(A[(A.stride.1 * matmul.s1.r8$x) + t35]) * float16(B[((B.stride.1 * t34) - t33) + matmul.s1.r8$x]))
+                    // float32((A[((A.stride.1*t34) - t33) + matmul$1.s1.k$x]*B[(B.stride.1*matmul$1.s1.k$x) + t35]))
                     const Expr wild_f16x = Variable::make(Float(16), "*");
                     const Expr mul_pattern = wild_f16x * wild_f16x;
                     if (expr_match(mul_pattern, cast->value, matches)) {
-                        // TODO: Verify if matmul.s1.r8$x (RVar) is used in both A and B
-
-                        // A[(A.stride .1 * matmul.s1.r8$x) + t35]
+                        // A[((A.stride.1*t34) - t33) + matmul$1.s1.k$x]
                         const Load *load_a = matches[0].as<Load>();
-                        // B[((B.stride.1 * t34) - t33) + matmul.s1.r8$x]
+                        // B[(B.stride.1 * matmul$1.s1.k$x) + t35]
                         const Load *load_b = matches[1].as<Load>();
 
                         if (load_a && load_b) {
-                            matmul_found = true;
+                            const Expr wild_i32x = Variable::make(Int(32), "*");
+                            const Expr k_var_expr = Variable::make(Int(32), k_var_name);
+                            // Check if the reduction domain is being used in both A and B to
+                            // validate the matrix multiply
+                            const Expr load_a_pattern = wild_i32x + k_var_expr;
+                            const Expr load_b_pattern = wild_i32x * k_var_expr + wild_i32x;
+                            if (expr_match(load_a_pattern, load_a->index, matches) &&
+                                expr_match(load_b_pattern, load_b->index, matches)) {
 
-                            A = load_a;
-                            B = load_b;
-                            C = matmul_load;
+                                matmul_found = true;
 
-                            return;
+                                A = load_a;
+                                B = load_b;
+                                C = matmul_load;
+
+                                return;
+                            }
                         }
                     }
                 }
@@ -937,8 +951,8 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
                 const int32_t num_tiles_k = wmma_K / 16;
                 wmma_K = 16;
 
-                // Now check the loop body to confirm this is a matrix multiply operation
-                IsMatrixMultiply is_matrix_multiply;
+                // Now check the loop body to confirm this is a matrix multiply expression
+                IsMatrixMultiply is_matrix_multiply{loop->name};
                 loop->body.accept(&is_matrix_multiply);
 
                 if (is_matrix_multiply.matmul_found) {
@@ -946,32 +960,34 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
                     const Load *load_b = is_matrix_multiply.B.as<Load>();
                     const Load *load_c = is_matrix_multiply.C.as<Load>();
 
-                    global_M = Variable::make(Int(32), load_c->name + ".extent.1");
-                    global_N = Variable::make(Int(32), load_c->name + ".extent.0");
-                    global_K = num_tiles_k * wmma_K;
+                    // Check the possible types for A, B and C
+                    if (load_c->type == Float(32) && load_a->type == Float(16) && load_b->type == Float(16)) {
+                        global_M = Variable::make(Int(32), load_c->name + ".extent.1");
+                        global_N = Variable::make(Int(32), load_c->name + ".extent.0");
+                        global_K = num_tiles_k * wmma_K;
 
-                    Expr stride_a = global_K;
-                    Expr stride_b = global_N;
-                    Expr stride_c = global_N;
+                        Expr stride_a = global_K;
+                        Expr stride_b = global_N;
+                        Expr stride_c = global_N;
 
-                    Expr a_var = Variable::make(Handle(), load_a->name);
-                    Expr b_var = Variable::make(Handle(), load_b->name);
-                    Expr c_var = Variable::make(Handle(), load_c->name);
+                        Expr a_var = Variable::make(Handle(), load_a->name);
+                        Expr b_var = Variable::make(Handle(), load_b->name);
+                        Expr c_var = Variable::make(Handle(), load_c->name);
 
-                    // Calculates the global warp indices used to iterate over the k
-                    // tiles of the matrices
-                    Expr warp_x = (block_id_x * block_dim_x + thread_id_x) / warp_size;
-                    Expr warp_y = block_id_y * block_dim_y + thread_id_y;
+                        // Calculates the global warp indices used to iterate over the k
+                        // tiles of the matrices
+                        Expr warp_x = (block_id_x * block_dim_x + thread_id_x) / warp_size;
+                        Expr warp_y = block_id_y * block_dim_y + thread_id_y;
 
 #define INLINE_TILE_LOOP 0
 #if INLINE_TILE_LOOP
-                    std::vector<Stmt> wmma_ops;
-                    for (int32_t tile_k = 0; tile_k < num_tiles_k; ++tile_k) {
-                        // Calculates the offsets to access tiles of matrices A, B and C
-                        // Note that the offsets are based on the global warp indices
-                        Expr offset_a = i64(global_K * wmma_M * warp_y + wmma_K * tile_k);
-                        Expr offset_b = i64(global_N * wmma_K * tile_k + wmma_N * warp_x);
-                        Expr offset_c = i64(global_N * wmma_M * warp_y + wmma_N * warp_x);
+                        std::vector<Stmt> wmma_ops;
+                        for (int32_t tile_k = 0; tile_k < num_tiles_k; ++tile_k) {
+                            // Calculates the offsets to access tiles of matrices A, B and C
+                            // Note that the offsets are based on the global warp indices
+                            Expr offset_a = i64(global_K * wmma_M * warp_y + wmma_K * tile_k);
+                            Expr offset_b = i64(global_N * wmma_K * tile_k + wmma_N * warp_x);
+                            Expr offset_c = i64(global_N * wmma_M * warp_y + wmma_N * warp_x);
 
                             // clang-format off
                         // Make WMMA op
@@ -980,38 +996,39 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
                             b_var, stride_b, offset_b,
                             c_var, stride_c, offset_c,
                             c_var, stride_c, offset_c}, Call::Intrinsic);
-                        // clang-format on
+                            // clang-format on
 
-                        wmma_ops.push_back(Evaluate::make(mma));
-                    }
-                    Stmt tiled_for = Block::make(wmma_ops);
+                            wmma_ops.push_back(Evaluate::make(mma));
+                        }
+                        Stmt tiled_for = Block::make(wmma_ops);
 #else
 
-                    // Creates a for to loop over the k tiles to perform the matrix multiply accumulate
-                    Expr tile_k = Variable::make(Int(32), "tile_k");
+                        // Creates a for to loop over the k tiles to perform the matrix multiply accumulate
+                        Expr tile_k = Variable::make(Int(32), "tile_k");
 
-                    // Calculates the offsets to access tiles of matrices A, B and C
-                    // Note that the offsets are based on the global warp indices
-                    Expr offset_a = i64(global_K * wmma_M * warp_y + wmma_K * tile_k);
-                    Expr offset_b = i64(global_N * wmma_K * tile_k + wmma_N * warp_x);
-                    Expr offset_c = i64(global_N * wmma_M * warp_y + wmma_N * warp_x);
+                        // Calculates the offsets to access tiles of matrices A, B and C
+                        // Note that the offsets are based on the global warp indices
+                        Expr offset_a = i64(global_K * wmma_M * warp_y + wmma_K * tile_k);
+                        Expr offset_b = i64(global_N * wmma_K * tile_k + wmma_N * warp_x);
+                        Expr offset_c = i64(global_N * wmma_M * warp_y + wmma_N * warp_x);
 
-                    // clang-format off
-                    // Make WMMA op
-                    Expr mma = Call::make(Handle(), "wmma_m16n16k16_mma_f32_f32", {
-                        a_var, stride_a, offset_a,
-                        b_var, stride_b, offset_b,
-                        c_var, stride_c, offset_c,
-                        c_var, stride_c, offset_c}, Call::Intrinsic);
-                    // clang-format on
+                        // clang-format off
+                        // Make WMMA op
+                        Expr mma = Call::make(Handle(), "wmma_m16n16k16_mma_f32_f32", {
+                            a_var, stride_a, offset_a,
+                            b_var, stride_b, offset_b,
+                            c_var, stride_c, offset_c,
+                            c_var, stride_c, offset_c}, Call::Intrinsic);
+                        // clang-format on
 
-                    Stmt tiled_for = For::make("tile_k", 0, num_tiles_k, loop->for_type, loop->device_api, Evaluate::make(mma));
+                        Stmt tiled_for = For::make("tile_k", 0, num_tiles_k, loop->for_type, loop->device_api, Evaluate::make(mma));
 
 #endif  // INLINE_TILE_LOOP
 
-                    tensorcore_op_found = true;
+                        tensorcore_op_found = true;
 
-                    return tiled_for;
+                        return tiled_for;
+                    }
                 }
             }
         }
@@ -1019,8 +1036,7 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
 
     Stmt s = IRMutator::visit(loop);
 
-    if (tensorcore_op_found)
-    {
+    if (tensorcore_op_found) {
         // We have a tensorcore loop, now calculate the correct number of blocks/threads
         // required to perform the matrix multiplies
 
@@ -1077,4 +1093,3 @@ std::unique_ptr<CodeGen_GPU_Dev> new_CodeGen_PTX_Dev(const Target &target) {
 
 }  // namespace Internal
 }  // namespace Halide
-
