@@ -283,9 +283,9 @@ public:
         // TODO: Check if CUDACapability is 70 or higher
         if (target.has_feature(Target::CUDACapability70)) {
 
-           debug(2) << "Extracting CUDA TensorCore Operations...\n";
+           debug(2) << "Extracting CUDA Tensor Core Operations...\n";
            result = ExtractTensorCoreOperations{}.mutate(s);
-           debug(2) << "After extracting TensorCore" << result << "\n";
+           debug(2) << "After extracting CUDA Tensor Core Operations" << result << "\n";
         }
 
         result = mutate(result);

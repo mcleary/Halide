@@ -766,8 +766,8 @@ vector<char> CodeGen_PTX_Dev::compile_to_src() {
     };
 
     std::string ptx_src(outstr.begin(), outstr.end());
-    replace(ptx_src, ".target sm_70", ".target sm_70, debug");
-    ptx_src.append("\n.section  .debug_abbrev\n{\n\n}\n\n");
+    // replace(ptx_src, ".target sm_70", ".target sm_70, debug");
+    // ptx_src.append("\n.section  .debug_abbrev\n{\n\n}\n\n");
 
     vector<char> buffer(ptx_src.begin(), ptx_src.end());
 
@@ -896,18 +896,34 @@ public:
                             const Expr k_var_expr = Variable::make(Int(32), k_var_name);
                             // Check if the reduction domain is being used in both A and B to
                             // validate the matrix multiply
-                            const Expr load_a_pattern = wild_i32x + k_var_expr;
-                            const Expr load_b_pattern = wild_i32x * k_var_expr + wild_i32x;
-                            if (expr_match(load_a_pattern, load_a->index, matches) &&
-                                expr_match(load_b_pattern, load_b->index, matches)) {
+                            const Expr load_a_pattern = wild_i32x + wild_i32x;
+                            const Expr load_b_pattern = wild_i32x * wild_i32x + wild_i32x;
+                            vector<Expr> matches_a, matches_b;
+                            const bool match_a = expr_match(load_a_pattern, load_a->index, matches_a);
+                            const bool match_b = expr_match(load_b_pattern, load_b->index, matches_b);
+                            if (match_a && match_b) {
+                                // Check if the k_var_name is present in the expressions for load_a and load_b
+                                const Variable *load_a_var_1 = matches_a[0].as<Variable>();
+                                const Variable *load_a_var_2 = matches_a[1].as<Variable>();
+                                const Variable *load_b_var_1 = matches_b[0].as<Variable>();
+                                const Variable *load_b_var_2 = matches_b[1].as<Variable>();
 
-                                matmul_found = true;
+                                // TODO: Can this checks be improved?
+                                const bool load_a_ok = (load_a_var_1 && load_a_var_1->name == k_var_name) || (load_a_var_2 && load_a_var_2->name == k_var_name);
+                                const bool load_b_ok = (load_b_var_1 && load_b_var_1->name == k_var_name) || (load_b_var_2 && load_b_var_2->name == k_var_name);
 
-                                A = load_a;
-                                B = load_b;
-                                C = matmul_load;
+                                if (load_a_ok && load_b_ok) {
+                                    // This matches A(k, y) * B(x, k) where both A and B
+                                    // are row-major
 
-                                return;
+                                    matmul_found = true;
+
+                                    A = load_a;
+                                    B = load_b;
+                                    C = matmul_load;
+
+                                    return;
+                                }
                             }
                         }
                     }
