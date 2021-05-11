@@ -109,8 +109,6 @@ protected:
     Type upgrade_type_for_storage(const Type &t) const override;
 
     bool supports_atomic_add(const Type &t) const override;
-
-    std::map<std::string, llvm::Function *> wmma_intrinsics;
 };
 
 CodeGen_PTX_Dev::CodeGen_PTX_Dev(const Target &host)
@@ -247,37 +245,16 @@ void CodeGen_PTX_Dev::init_module() {
         {"dp2a", Int(32), "dp2a_s32_u32", {Int(16, 4), UInt(8, 4), Int(32)}},
         {"dp2a", Int(32), "dp2a_u32_s32", {UInt(16, 4), Int(8, 4), Int(32)}},
         {"dp2a", UInt(32), "dp2a_u32_u32", {UInt(16, 4), UInt(8, 4), UInt(32)}},
-    };
+        {"wmma.m16n16k16.load.a.row", Float(16, 16), "wmma.m16n16k16.load.a.row.f16.p0i8", {Handle(), Int(32), Int(32)}},
+        {"wmma.m16n16k16.load.b.row", Float(16, 16), "wmma.m16n16k16.load.b.row.f16.p0i8", {Handle(), Int(32), Int(32)}},
+        {"wmma.m16n16k16.load.c.row", Float(32, 8), "wmma.m16n16k16.load.c.row.f32.p0i8", {Handle(), Int(32), Int(32)}},
+        {"wmma.m16n16k16.mma.row.row", Float(32, 8), "wmma.m16n16k16.mma.row.row.f32.f32", {Float(16, 16), Float(16, 16), Float(32, 8)}},
+        {"wmma.m16n16k16.store.d.row", Handle(), "wmma.m16n16k16.store.d.row.f32", {Handle(), Int(32), Int(32), Float(32, 8)}}};
 
     for (auto &&i : ptx_intrins) {
         auto *fn = declare_intrin_overload(i.name, i.ret_type, i.intrin_name, std::move(i.arg_types));
         fn->addFnAttr(llvm::Attribute::ReadNone);
         fn->addFnAttr(llvm::Attribute::NoUnwind);
-    }
-
-    struct WMMAIntrinsic {
-        const char *name;
-        const char *intrin_name;
-        vector<Type> arg_types;
-    };
-
-    WMMAIntrinsic ptx_wmma_intrins[] = {
-        {"wmma_m16n16k16_mma_f32_f32", "wmma.m16n16k16.mma.f32.f32", {Handle(), Int(32), Int(64), Handle(), Int(32), Int(64), Handle(), Int(32), Int(64), Handle(), Int(64)}}};
-
-    for (auto &&i : ptx_wmma_intrins) {
-        std::vector<llvm::Type *> arg_types;
-        arg_types.reserve(i.arg_types.size());
-        for (int arg_type_index = 0; arg_type_index < i.arg_types.size(); ++arg_type_index) {
-            arg_types.push_back(llvm_type_of(i.arg_types[arg_type_index]));
-        }
-
-        // llvm::StructType* ret_type_struct = llvm::StructType::create(*context, ret_type_members);
-        llvm::Type *void_ret_type = llvm::Type::getVoidTy(*context);
-        llvm::Function *fn = get_llvm_intrin(void_ret_type, i.intrin_name, arg_types);
-        fn->addFnAttr(llvm::Attribute::ReadNone);
-        fn->addFnAttr(llvm::Attribute::NoUnwind);
-
-        wmma_intrinsics[i.name] = fn;
     }
 }
 
@@ -296,21 +273,10 @@ void CodeGen_PTX_Dev::visit(const Call *op) {
         internal_assert(barrier0) << "Could not find PTX barrier intrinsic (llvm.nvvm.barrier0)\n";
         builder->CreateCall(barrier0);
         value = ConstantInt::get(i32_t, 0);
-    } else if (op->name == "dp2a" || op->name == "dp4a") {
+    } else if (op->name == "dp2a" || op->name == "dp4a" || starts_with(op->name, "wmma.")) {
         // TODO: It would be better if CodeGen_LLVM could handle overloaded intrin calls by default.
         value = call_overloaded_intrin(op->type, op->name, op->args);
         internal_assert(value) << Expr(op) << "\n";
-    } else if (op->name == "wmma_m16n16k16_mma_f32_f32") {
-        llvm::Function *wmma_func = wmma_intrinsics[op->name];
-
-        vector<Value *> arg_values(op->args.size());
-        for (size_t i = 0; i < op->args.size(); i++) {
-            arg_values[i] = codegen(op->args[i]);
-        }
-
-        // TODO: Call the WMMA intrinsic
-        llvm::Type *void_type = llvm::Type::getVoidTy(*context);
-        value = call_intrin(void_type, 1, wmma_func, arg_values);
     } else {
         CodeGen_LLVM::visit(op);
     }
@@ -757,19 +723,20 @@ vector<char> CodeGen_PTX_Dev::compile_to_src() {
     }
     debug(2) << "Done with CodeGen_PTX_Dev::compile_to_src";
 
-    debug(1) << "PTX kernel:\n"
-             << outstr.c_str() << "\n";
-
-    auto replace = [](std::string &input, const std::string &what, const std::string &with) {
-        size_t pos = input.find(what);
-        input.replace(pos, what.size(), with.c_str());
-    };
-
+#define DEBUG_PTX 0
+#if DEBUG_PTX
+    // Adding this in the PTX allows the use of Nsight to debug the PTX
+    // TODO: Could this an official Halide feature?
     std::string ptx_src(outstr.begin(), outstr.end());
-    // replace(ptx_src, ".target sm_70", ".target sm_70, debug");
-    // ptx_src.append("\n.section  .debug_abbrev\n{\n\n}\n\n");
-
+    ptx_src = replace_all(ptx_src, ".target sm_70", ".target sm_70, debug");
+    ptx_src.append("\n.section  .debug_abbrev\n{\n\n}\n\n");
     vector<char> buffer(ptx_src.begin(), ptx_src.end());
+#else
+    std::vector<char> buffer(outstr.begin(), outstr.end());
+#endif
+
+    debug(1) << "PTX kernel:\n"
+             << buffer.data() << "\n";
 
     // Dump the SASS too if the cuda SDK is in the path
     if (debug::debug_level() >= 2) {
@@ -962,7 +929,7 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
             // Shape m16n16k16
             // TODO: Note this won't work unless the extent of the inner loop is constant
             //       How can the shape be detected if the k is not constant, i.e, if k
-            //       is based on the dimentions of matrix A for example
+            //       is based on the dimentions of matrix A for example?
             if (wmma_M == 16 && wmma_N == 16 && wmma_K % 16 == 0) {
                 const int32_t num_tiles_k = wmma_K / 16;
                 wmma_K = 16;
@@ -986,38 +953,41 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
                         Expr stride_b = global_N;
                         Expr stride_c = global_N;
 
-                        Expr a_var = Variable::make(Handle(), load_a->name);
-                        Expr b_var = Variable::make(Handle(), load_b->name);
-                        Expr c_var = Variable::make(Handle(), load_c->name);
+                        Expr var_a = Variable::make(Handle(), load_a->name);
+                        Expr var_b = Variable::make(Handle(), load_b->name);
+                        Expr var_c = Variable::make(Handle(), load_c->name);
 
                         // Calculates the global warp indices used to iterate over the k
                         // tiles of the matrices
                         Expr warp_x = (block_id_x * block_dim_x + thread_id_x) / warp_size;
                         Expr warp_y = block_id_y * block_dim_y + thread_id_y;
 
-#define INLINE_TILE_LOOP 0
+                        Expr offset_c = i64(global_N * wmma_M * warp_y + wmma_N * warp_x);
+
+#define INLINE_TILE_LOOP 1
 #if INLINE_TILE_LOOP
+                        Expr frag_accumulator = Call::make(Float(32, 8), "wmma.m16n16k16.load.c.row", {var_c, offset_c, stride_c}, Call::Intrinsic);
+
                         std::vector<Stmt> wmma_ops;
                         for (int32_t tile_k = 0; tile_k < num_tiles_k; ++tile_k) {
                             // Calculates the offsets to access tiles of matrices A, B and C
                             // Note that the offsets are based on the global warp indices
                             Expr offset_a = i64(global_K * wmma_M * warp_y + wmma_K * tile_k);
                             Expr offset_b = i64(global_N * wmma_K * tile_k + wmma_N * warp_x);
-                            Expr offset_c = i64(global_N * wmma_M * warp_y + wmma_N * warp_x);
 
-                            // clang-format off
-                        // Make WMMA op
-                        Expr mma = Call::make(Handle(), "wmma_m16n16k16_mma_f32_f32", {
-                            a_var, stride_a, offset_a,
-                            b_var, stride_b, offset_b,
-                            c_var, stride_c, offset_c,
-                            c_var, stride_c, offset_c}, Call::Intrinsic);
-                            // clang-format on
+                            Expr frag_a = Call::make(Float(16, 16), "wmma.m16n16k16.load.a.row", {var_a, offset_a, stride_a}, Call::Intrinsic);
+                            Expr frag_b = Call::make(Float(16, 16), "wmma.m16n16k16.load.b.row", {var_b, offset_b, stride_b}, Call::Intrinsic);
+                            frag_accumulator = Call::make(Float(32, 8), "wmma.m16n16k16.mma.row.row", {frag_a, frag_b, frag_accumulator}, Call::Intrinsic);
 
-                            wmma_ops.push_back(Evaluate::make(mma));
+                            wmma_ops.push_back(Evaluate::make(frag_accumulator));
                         }
+                        Expr store_frag = Call::make(Handle(), "wmma.m16n16k16.store.d.row", {var_c, offset_c, stride_c, frag_accumulator}, Call::Intrinsic);
+                        wmma_ops.push_back(Evaluate::make(store_frag));
+
                         Stmt tiled_for = Block::make(wmma_ops);
 #else
+                        // WIP Code: Trying to create a Halide For loop to do the computation
+                        Expr load_frag_c = Call::make(Float(32, 8), "wmma.m16n16k16.load.c.row", {c_var, offset_c, stride_c}, Call::Intrinsic);
 
                         // Creates a for to loop over the k tiles to perform the matrix multiply accumulate
                         Expr tile_k = Variable::make(Int(32), "tile_k");
@@ -1026,18 +996,16 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
                         // Note that the offsets are based on the global warp indices
                         Expr offset_a = i64(global_K * wmma_M * warp_y + wmma_K * tile_k);
                         Expr offset_b = i64(global_N * wmma_K * tile_k + wmma_N * warp_x);
-                        Expr offset_c = i64(global_N * wmma_M * warp_y + wmma_N * warp_x);
 
-                        // clang-format off
-                        // Make WMMA op
-                        Expr mma = Call::make(Handle(), "wmma_m16n16k16_mma_f32_f32", {
-                            a_var, stride_a, offset_a,
-                            b_var, stride_b, offset_b,
-                            c_var, stride_c, offset_c,
-                            c_var, stride_c, offset_c}, Call::Intrinsic);
-                        // clang-format on
+                        Expr frag_a = Call::make(Float(16, 16), "wmma.m16n16k16.load.a.row", {a_var, offset_a, stride_a}, Call::Intrinsic);
+                        Expr frag_b = Call::make(Float(16, 16), "wmma.m16n16k16.load.b.row", {b_var, offset_b, stride_b}, Call::Intrinsic);
+                        Expr frag_c = Call::make(Float(32, 8), "wmma.m16n16k16.mma.row.row", {frag_a, frag_b, load_frag_c}, Call::Intrinsic);
 
-                        Stmt tiled_for = For::make("tile_k", 0, num_tiles_k, loop->for_type, loop->device_api, Evaluate::make(mma));
+                        Stmt mma_for = For::make("tile_k", 0, num_tiles_k, loop->for_type, loop->device_api, Evaluate::make(frag_c));
+                        Expr store_frag_c = Call::make(Handle(), "wmma.m16n16k16.store.d.row", {c_var, offset_c, stride_c, frag_c}, Call::Intrinsic);
+                        Stmt tiled_for = Block::make({Evaluate::make(load_frag_c),
+                                                      mma_for,
+                                                      Evaluate::make(store_frag_c)});
 
 #endif  // INLINE_TILE_LOOP
 
@@ -1064,7 +1032,9 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
             // TODO: This will effectively launch 1 block for each 16x16 tile of the input matrix.
             //       This works but its probably not very efficient.
             //       Need to find a way to calculate the maximum possible block size to maximize
-            //       stream multiprocessors load
+            //       stream multiprocessors load.
+            //       Doing gives almost 5x speedup compared to a regular CUDA matrix multiply, but
+            //       it can be improved even further
             Expr max_threads_x = i32(1);
             Expr max_threads_y = i32(1);
 

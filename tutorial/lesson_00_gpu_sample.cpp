@@ -15,7 +15,7 @@ Func out("matmul");
 
 const bool test_single = true;
 const bool verbose = false;
-const bool print_outputs = false;
+const bool print_outputs = true;
 const bool print_to_file = false;
 
 template<typename T>
@@ -94,7 +94,7 @@ void TestMatMul(int M, int N, int K)
 		if (verbose)
 		{
 			// Enable debugging hopefully to see the CUDA API calls
-			target.set_feature(Target::Debug);
+			// target.set_feature(Target::Debug);
 
 			cout << "Halide Host Target: " << target << endl;
 			cout << "Halide JIT Target : " << jitTarget << endl;
@@ -224,8 +224,8 @@ int main()
 		if (test_single)
 		{
 			// mk x kn = mn
-			const int min_size = 256;
-			const int max_size = 256;
+			const int min_size = 16;
+			const int max_size = 16;
 			const int m = max_size;
 			const int n = max_size;
 			const int k = max_size;
