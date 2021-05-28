@@ -828,11 +828,6 @@ MatrixMultiplyInfo is_matrix_multiply(const For *loop) {
         return MatrixMultiplyInfo{};
     }
 
-    IRPrinter p(std::cout);
-    loop->accept(&p);
-    std::cout << std::endl
-              << std::endl;
-
     // The body of the loop can be a LetStmt or a Store
     const LetStmt *let = loop->body.as<LetStmt>();
     const Store *store = loop->body.as<Store>();
@@ -1072,7 +1067,7 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
                         // clang-format off
                         // Creates a Stmt with the loop over the k tiles
                         Stmt mma_for =
-                            For::make("tile_k", 0, num_tiles_k, ForType::Unrolled, loop->device_api,
+                            For::make("tile_k", 0, num_tiles_k, ForType::Serial, loop->device_api,
                                 LetStmt::make("row_a", row_a_value,
                                     LetStmt::make("col_a", col_a_value,
                                         LetStmt::make("row_b", row_b_value,
@@ -1122,7 +1117,11 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
 
                         // Unrolls the wmma loop for better performance
                         // If printing wmma_op, it is better to do it before the unroll_loops pass
-                        Stmt tiled_for = unroll_loops(wmma_op);
+                        // Stmt tiled_for = unroll_loops(wmma_op);
+                        Stmt tiled_for = wmma_op;
+                        IRPrinter p(std::cout);
+                        wmma_op.accept(&p);
+                        std::cout << std::endl;
 
                         tensorcore_op_found = true;
 
@@ -1138,6 +1137,11 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
     if (tensorcore_op_found) {
         // We have a tensorcore loop, now calculate the correct number of blocks/threads
         // required to perform the tiled matrix multiplies
+
+        IRPrinter p(std::cout);
+        loop->accept(&p);
+        std::cout << std::endl
+                  << std::endl;
 
         if (CodeGen_GPU_Dev::is_gpu_var(loop->name)) {
             Expr num_tiles_x = global_N / wmma_N;
@@ -1159,6 +1163,7 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
             const For *for_loop = s.as<For>();
 
             Expr new_extent;
+            Stmt new_body = for_loop->body;
             if (ends_with(for_loop->name, ".__block_id_y")) {
                 new_extent = num_blocks_y;
             } else if (ends_with(for_loop->name, ".__block_id_x")) {
@@ -1167,9 +1172,17 @@ Stmt ExtractTensorCoreOperations::visit(const For *loop) {
                 new_extent = num_threads_y;
             } else if (ends_with(for_loop->name, ".__thread_id_x")) {
                 new_extent = num_threads_x;
+
+                if (const Block *block = for_loop->body.as<Block>()) {
+                    new_body = block->first;
+                }
+
+                for_loop->body.accept(&p);
+                std::cout << std::endl
+                          << std::endl;
             }
 
-            s = For::make(for_loop->name, for_loop->min, new_extent, for_loop->for_type, for_loop->device_api, for_loop->body);
+            s = For::make(for_loop->name, for_loop->min, new_extent, for_loop->for_type, for_loop->device_api, new_body);
         }
     }
 

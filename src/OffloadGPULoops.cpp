@@ -284,7 +284,7 @@ public:
             // can be picked by the HostClosure visitor
             debug(1) << "Extracting CUDA Tensor Core Operations...\n";
             result = ExtractTensorCoreOperations{}.mutate(s);
-            debug(2) << "After extracting CUDA Tensor Core Operations" << result << "\n";
+            debug(1) << "After extracting CUDA Tensor Core Operations" << result << "\n";
         }
 
         result = mutate(result);
